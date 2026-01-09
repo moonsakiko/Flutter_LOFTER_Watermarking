@@ -4,14 +4,14 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.5.3 <4.0.0'
+  sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
   
   # 🖼️ 核心处理库
-  ultralytics_yolo: ^0.1.25  # YOLO 模型加载
+  ultralytics_yolo: 0.1.19  # YOLO 模型加载
   image: ^4.1.3             # 图像像素级处理 (Resize, Crop, Paste)
   
   # 📂 文件与权限
