@@ -1,40 +1,28 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'screens/home_screen.dart';
-import 'services/yolo_service.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
+void main() {
+  runApp(const LofterRepairApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class LofterRepairApp extends StatelessWidget {
+  const LofterRepairApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // 全局注入 YOLO 服务
-    return MultiProvider(
-      providers: [
-        Provider<YoloService>(create: (_) => YoloService()),
-      ],
-      child: MaterialApp(
-        title: 'LOFTER 去水印',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          appBarTheme: const AppBarTheme(
-            centerTitle: true,
-            elevation: 0,
-          ),
-          cardTheme: CardTheme(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          ),
+    return MaterialApp(
+      title: 'LOFTER 修复姬',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2C5E2E), // 墨绿色调
+          brightness: Brightness.light,
         ),
-        home: const HomeScreen(),
+        textTheme: GoogleFonts.notoSansScTextTheme(),
       ),
+      home: const HomeScreen(),
     );
   }
 }

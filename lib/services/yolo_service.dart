@@ -1,63 +1,55 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
 class YoloService {
-  ObjectDetector? _detector;
-  bool isLoaded = false;
+  YOLO? _yolo;
+  final String modelPath = 'best_float16.tflite'; // 对应assets里的文件名
 
   // 初始化模型
-  Future<void> initModel() async {
-    if (isLoaded) return;
-
+  Future<void> init() async {
+    if (_yolo != null) return;
+    
+    // 检查模型文件是否存在
+    // 注意：ultralytics_yolo 插件通常需要模型在 assets 中
     try {
-      // 这里的 modelPath 对应 assets/models/yolo_model.tflite
-      _detector = ObjectDetector(modelPath: 'assets/models/yolo_model.tflite');
-      
-      // 加载模型
-      await _detector!.load();
-      isLoaded = true;
-      print("✅ YOLO 模型加载成功");
+      _yolo = YOLO(
+        modelPath: 'assets/models/$modelPath', // 这里的路径可能需要根据插件实际要求调整，通常直接写文件名如果放在assets根目录，但最好写全
+        task: YOLOTask.detect,
+      );
+      // 实际上插件加载方式：Android放在assets/models下通常直接传文件名即可，这里为了稳妥
+      // 如果云打包后加载失败，请尝试只传 'best_float16' (不带后缀)
     } catch (e) {
-      print("❌ 模型加载失败: $e");
-      throw Exception("无法加载模型，请检查 assets 目录");
+      print("模型加载初始化出错: $e");
     }
   }
 
-  // 执行侦察
-  // 返回检测到的对象列表
-  Future<List<Map<String, double>>?> detect(String imagePath) async {
-    if (!isLoaded) await initModel();
-
-    // 读取图片并传给插件
-    // 插件通常需要文件路径或二进制流，这里简化为路径调用
-    // 注意：具体API可能随插件版本更新，这里基于通用逻辑编写
+  // 预测水印位置
+  Future<List<Map<String, dynamic>>> detectWatermark(Uint8List imageBytes) async {
+    if (_yolo == null) {
+      await init();
+    }
+    
     try {
-      final results = await _detector!.detect(imagePath: imagePath);
+      // 加载模型（如果尚未加载）
+      // 注意：插件文档建议在使用前 load
+      await _yolo!.loadModel(); 
       
-      // 转换结果为简单的坐标 Map 列表 [x, y, w, h]
-      List<Map<String, double>> boxes = [];
-      for (var result in results!) {
-        // 过滤置信度 (Confidence Threshold)
-        if ((result.confidence ?? 0) < 0.5) continue;
-        
-        final box = result.boundingBox;
-        boxes.add({
-          'x': box.left,
-          'y': box.top,
-          'w': box.width,
-          'h': box.height,
-          'conf': result.confidence ?? 0.0,
-        });
-      }
-      return boxes;
+      final result = await _yolo!.predict(imageBytes, confidenceThreshold: 0.3);
+      
+      // 提取边界框 boxes
+      // 插件返回的结构通常包含 'boxes' 列表
+      final boxes = result['boxes'] as List<dynamic>? ?? [];
+      
+      return boxes.cast<Map<String, dynamic>>();
     } catch (e) {
-      print("推理出错: $e");
+      print("AI识别失败: $e");
       return [];
     }
   }
   
   void dispose() {
-    // 插件暂无明确 dispose，保留接口
+    _yolo?.dispose();
   }
 }
