@@ -19,30 +19,27 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # 👇👇👇 修改了这里：不锁死版本，使用最新版 Flutter 👇👇👇
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
           channel: 'stable'
+      # 👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆
 
-      # 1. 生成工程 (防止没有 android 文件夹)
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
             flutter create . --platforms android --project-name lofter_repair_app
           fi
 
-      # 2. 修复安卓环境 (share_plus/image_picker 需要)
       - name: Fix Android Environment
         run: |
-          # 强制 Kotlin 版本 1.9.0
+          # 修复 Kotlin 版本冲突
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          
-          # 强制 MinSDK 21
+          # 修复 MinSDK
           sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
 
-      # 3. 设置中文名
       - name: Change App Name
         run: |
           MANIFEST_FILE=android/app/src/main/AndroidManifest.xml
@@ -51,13 +48,11 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      # 4. 生成图标和启动图
       - name: Generate Assets
         run: |
           dart run flutter_launcher_icons
           dart run flutter_native_splash:create
 
-      # 5. 生成签名
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -70,11 +65,9 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      # 6. 打包 (Release + Arm64)
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
-      # 7. 重命名并上传
       - name: Rename and Upload
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
