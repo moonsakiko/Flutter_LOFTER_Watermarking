@@ -1,0 +1,86 @@
+name: Build LOFTER Repair App
+on:
+  workflow_dispatch:
+
+env:
+  APP_NAME: "Lofter去水印"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+
+      # 1. 生成工程 (防止没有 android 文件夹)
+      - name: Create Android Project
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create . --platforms android --project-name lofter_repair_app
+          fi
+
+      # 2. 修复安卓环境 (share_plus/image_picker 需要)
+      - name: Fix Android Environment
+        run: |
+          # 强制 Kotlin 版本 1.9.0
+          sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
+          sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
+          
+          # 强制 MinSDK 21
+          sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
+
+      # 3. 设置中文名
+      - name: Change App Name
+        run: |
+          MANIFEST_FILE=android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' $MANIFEST_FILE
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # 4. 生成图标和启动图
+      - name: Generate Assets
+        run: |
+          dart run flutter_launcher_icons
+          dart run flutter_native_splash:create
+
+      # 5. 生成签名
+      - name: Generate Keystore
+        run: |
+          keytool -genkey -v -keystore upload-keystore.jks \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias upload -dname "CN=Android, OU=Android, O=Android, L=Android, S=Android, C=US" \
+            -storepass android -keypass android
+          
+          echo "storePassword=android" > android/key.properties
+          echo "keyPassword=android" >> android/key.properties
+          echo "keyAlias=upload" >> android/key.properties
+          echo "storeFile=../../upload-keystore.jks" >> android/key.properties
+
+      # 6. 打包 (Release + Arm64)
+      - name: Build APK
+        run: flutter build apk --release --target-platform android-arm64
+
+      # 7. 重命名并上传
+      - name: Rename and Upload
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}_Install_Package
+          path: "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
