@@ -1,72 +1,88 @@
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:math';
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
 
-/// 这是一个纯计算类，建议在 compute 中调用
 class ImageProcessor {
-  
-  /// 核心修复逻辑
-  /// [wmBytes] 有水印的高清图数据
-  /// [origBytes] 无水印的低清图数据
-  /// [detectionBoxes] YOLO识别出的水印位置列表
-  static Future<Uint8List?> repairImage(
-    Uint8List wmBytes, 
-    Uint8List origBytes, 
-    List<Map<String, dynamic>> detectionBoxes
-  ) async {
-    // 1. 解码图片
-    final wmImage = img.decodeImage(wmBytes);
-    final origImage = img.decodeImage(origBytes);
+  // 配置参数，对应 Python 脚本中的 Expansion Ratio
+  static const double widthExpansionRatio = 0.20;
+  static const double heightExpansionRatio = 0.10;
 
-    if (wmImage == null || origImage == null) return null;
+  /// 执行修复逻辑
+  /// [wmPath] 水印图路径
+  /// [origPath] 原图路径
+  /// [box] 水印区域 [x, y, w, h]
+  Future<File> repairImage(String wmPath, String origPath, List<double> box) async {
+    // 1. 解码图片 (这是一个耗时操作，建议放在 compute 中，但为了代码简单直接写异步)
+    final wmBytes = await File(wmPath).readAsBytes();
+    final origBytes = await File(origPath).readAsBytes();
 
-    // 2. 将低清原图放大到高清图尺寸 (使用高质量插值)
-    // 对应 Python: cv2.resize(..., interpolation=cv2.INTER_LANCZOS4)
-    // Dart image 库的 cubic 插值接近 Lanczos
-    final resizedOrig = img.copyResize(
-      origImage, 
-      width: wmImage.width, 
-      height: wmImage.height, 
-      interpolation: img.Interpolation.cubic
-    );
+    img.Image? wmImage = img.decodeImage(wmBytes);
+    img.Image? origImage = img.decodeImage(origBytes);
 
-    // 3. 遍历所有检测到的水印框进行覆盖
-    for (var box in detectionBoxes) {
-      // 插件返回的 box 格式通常包含 x, y, width, height (归一化或像素值，需确认插件返回)
-      // 假设 ultralytics_yolo 返回的是像素坐标 (根据文档示例)
-      // 如果是归一化(0-1)，需要乘以宽高。这里假设是像素值。
-      
-      // 安全获取坐标
-      int x = (box['x'] as num).toInt();
-      int y = (box['y'] as num).toInt();
-      int w = (box['width'] as num).toInt();
-      int h = (box['height'] as num).toInt();
-
-      // 4. 扩大修复区域 (对应 Python 的 EXPANSION_RATIO)
-      double widthExpansion = 0.2;
-      double heightExpansion = 0.1;
-      
-      int marginW = (w * widthExpansion / 2).toInt();
-      int marginH = (h * heightExpansion / 2).toInt();
-      
-      int startX = (x - marginW).clamp(0, wmImage.width);
-      int startY = (y - marginH).clamp(0, wmImage.height);
-      int endX = (x + w + marginW).clamp(0, wmImage.width);
-      int endY = (y + h + marginH).clamp(0, wmImage.height);
-      
-      int patchW = endX - startX;
-      int patchH = endY - startY;
-
-      if (patchW <= 0 || patchH <= 0) continue;
-
-      // 5. 从放大后的原图中裁剪出干净的补丁
-      final cleanPatch = img.copyCrop(resizedOrig, x: startX, y: startY, width: patchW, height: patchH);
-      
-      // 6. 贴回到有水印的图上
-      img.compositeImage(wmImage, cleanPatch, dstX: startX, dstY: startY);
+    if (wmImage == null || origImage == null) {
+      throw Exception("无法解码图片文件");
     }
 
-    // 7. 编码回 JPG
-    return Uint8List.fromList(img.encodeJpg(wmImage, quality: 98));
+    // 2. 计算修复区域 (逻辑复刻 Python)
+    int x = box[0].toInt();
+    int y = box[1].toInt();
+    int w = box[2].toInt();
+    int h = box[3].toInt();
+
+    // 扩大选区
+    int wMargin = ((w * widthExpansionRatio) / 2).toInt();
+    int hMargin = ((h * heightExpansionRatio) / 2).toInt();
+
+    int startX = max(0, x - wMargin);
+    int startY = max(0, y - hMargin);
+    int endX = min(wmImage.width, x + w + wMargin);
+    int endY = min(wmImage.height, y + h + hMargin);
+
+    int patchW = endX - startX;
+    int patchH = endY - startY;
+
+    if (patchW <= 0 || patchH <= 0) {
+      throw Exception("计算出的修复区域无效");
+    }
+
+    // 3. 将低清原图 Resize 到高清图尺寸
+    // 使用 cubic 插值模拟 Lanczos4，效果较好
+    img.Image resizedOrig = img.copyResize(
+      origImage,
+      width: wmImage.width,
+      height: wmImage.height,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    // 4. 裁剪补丁 (从放大后的原图中裁剪)
+    img.Image cleanPatch = img.copyCrop(
+      resizedOrig,
+      x: startX,
+      y: startY,
+      width: patchW,
+      height: patchH,
+    );
+
+    // 5. 粘贴补丁 (覆盖到高清有水印图上)
+    img.compositeImage(
+      wmImage,
+      cleanPatch,
+      dstX: startX,
+      dstY: startY,
+    );
+
+    // 6. 保存结果
+    final appDir = await getApplicationDocumentsDirectory();
+    final fileName = 'fixed_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final savePath = path.join(appDir.path, fileName);
+    
+    // 编码为 JPG，质量 98
+    final encoded = img.encodeJpg(wmImage, quality: 98);
+    final resultFile = File(savePath);
+    await resultFile.writeAsBytes(encoded);
+
+    return resultFile;
   }
 }

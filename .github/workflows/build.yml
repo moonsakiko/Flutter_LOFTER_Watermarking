@@ -1,9 +1,9 @@
-name: Build LOFTER Repair APP
+name: Build Android App
 on:
   workflow_dispatch:
 
 env:
-  APP_NAME: "LOFTER图片修复"
+  APP_NAME: "去水印神器"
 
 jobs:
   build:
@@ -25,36 +25,34 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      # 1. 创建安卓工程骨架
+      # 1. 创建工程 (如果只上传了 lib 和 pubspec)
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
-            flutter create . --platforms android --project-name lofter_repair_tool
+            flutter create . --platforms android --project-name lofter_fixer
           fi
 
-      # 2. 修改应用名和配置
-      - name: Config App
+      # 2. 修改 APP 中文名
+      - name: Change App Name
         run: |
-          # 修改中文名
           sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
-          
-          # 修正 Kotlin 版本 (针对新插件兼容性)
+
+      # 3. 修复环境 (关键：Kotlin 版本 和 MinSDK)
+      - name: Fix Android Environment
+        run: |
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          
-          # 修正 MinSDK (ultralytics 要求较高)
-          sed -i 's/minSdkVersion.*/minSdkVersion 24/g' android/app/build.gradle
+          sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
 
-      # 3. 安装依赖
       - name: Install Dependencies
         run: flutter pub get
 
-      # 4. 生成签名 (必须，否则无法安装)
+      # 4. 生成临时签名 (云打包必须)
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -alias upload -dname "CN=Repair, OU=Repair, O=Repair, L=Repair, S=Repair, C=CN" \
+            -alias upload -dname "CN=Android, OU=Android, O=Android, L=Android, S=Android, C=US" \
             -storepass android -keypass android
           
           echo "storePassword=android" > android/key.properties
@@ -64,11 +62,15 @@ jobs:
 
       # 5. 打包 Release APK
       - name: Build APK
-        run: flutter build apk --release --target-platform android-arm64 --no-shrink
+        run: flutter build apk --release --target-platform android-arm64
 
-      # 6. 上传
-      - name: Upload APK
+      # 6. 重命名并上传
+      - name: Rename and Upload
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LOFTER_Repair_APP
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: ${{ env.APP_NAME }}_Install_Package
+          path: "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"

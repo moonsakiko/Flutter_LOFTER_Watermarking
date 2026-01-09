@@ -1,28 +1,29 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'screens/home_screen.dart';
+import 'screens/home_page.dart';
 
 void main() {
-  runApp(const LofterRepairApp());
+  runApp(const MyApp());
 }
 
-class LofterRepairApp extends StatelessWidget {
-  const LofterRepairApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'LOFTER 修复姬',
+      title: 'LOFTER Fixer',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2C5E2E), // 墨绿色调
-          brightness: Brightness.light,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),
+        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+        appBarTheme: const AppBarTheme(
+          elevation: 0,
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black87,
         ),
-        textTheme: GoogleFonts.notoSansScTextTheme(),
       ),
-      home: const HomeScreen(),
+      home: const HomePage(),
     );
   }
 }

@@ -1,55 +1,62 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:ultralytics_yolo/ultralytics_yolo.dart';
+import 'package:ultralytics_yolo/yolo_model.dart';
 
 class YoloService {
-  YOLO? _yolo;
-  final String modelPath = 'best_float16.tflite'; // 对应assets里的文件名
+  ObjectDetector? _detector;
+  final String modelPath = 'assets/models/best_float16.tflite';
 
-  // 初始化模型
-  Future<void> init() async {
-    if (_yolo != null) return;
+  bool get isLoaded => _detector != null;
+
+  /// 初始化模型
+  Future<void> initModel() async {
+    if (_detector != null) return;
     
-    // 检查模型文件是否存在
-    // 注意：ultralytics_yolo 插件通常需要模型在 assets 中
-    try {
-      _yolo = YOLO(
-        modelPath: 'assets/models/$modelPath', // 这里的路径可能需要根据插件实际要求调整，通常直接写文件名如果放在assets根目录，但最好写全
-        task: YOLOTask.detect,
-      );
-      // 实际上插件加载方式：Android放在assets/models下通常直接传文件名即可，这里为了稳妥
-      // 如果云打包后加载失败，请尝试只传 'best_float16' (不带后缀)
-    } catch (e) {
-      print("模型加载初始化出错: $e");
-    }
+    // 创建探测器实例
+    final model = LocalYoloModel(
+      id: 'lofter_model',
+      task: Task.detect,
+      format: Format.tflite,
+      modelPath: modelPath,
+    );
+
+    _detector = ObjectDetector(model: model);
+    await _detector!.load();
+    print("✅ YOLO Model Loaded: $modelPath");
   }
 
-  // 预测水印位置
-  Future<List<Map<String, dynamic>>> detectWatermark(Uint8List imageBytes) async {
-    if (_yolo == null) {
-      await init();
-    }
+  /// 预测图片中的水印位置
+  /// 返回格式: [x, y, width, height] (绝对坐标)
+  Future<List<double>?> detectWatermark(String imagePath) async {
+    if (_detector == null) await initModel();
+
+    // 读取图片
+    final imageFile = File(imagePath);
+    if (!imageFile.existsSync()) return null;
     
-    try {
-      // 加载模型（如果尚未加载）
-      // 注意：插件文档建议在使用前 load
-      await _yolo!.loadModel(); 
-      
-      final result = await _yolo!.predict(imageBytes, confidenceThreshold: 0.3);
-      
-      // 提取边界框 boxes
-      // 插件返回的结构通常包含 'boxes' 列表
-      final boxes = result['boxes'] as List<dynamic>? ?? [];
-      
-      return boxes.cast<Map<String, dynamic>>();
-    } catch (e) {
-      print("AI识别失败: $e");
-      return [];
-    }
+    final imageBytes = await imageFile.readAsBytes();
+
+    // 执行预测
+    // confThreshold 对应 Python 中的 YOLO_CONFIDENCE_THRESHOLD (0.5)
+    final results = await _detector!.detect(
+      imageBytes: imageBytes,
+      confThreshold: 0.5, 
+      iouThreshold: 0.4,
+    );
+
+    if (results.isEmpty) return null;
+
+    // 找到置信度最高的结果
+    // 假设 results 已经包含 boundingBox
+    final bestResult = results.first; // 这里简化处理，取第一个
+    final box = bestResult.boundingBox; // 这是归一化坐标还是绝对坐标取决于插件版本，通常是绝对坐标
+
+    // 这里 ultralytics_yolo 插件返回的 boundingBox 是 Rect 对象
+    return [box.left, box.top, box.width, box.height];
   }
-  
+
   void dispose() {
-    _yolo?.dispose();
+    // 插件暂无 dispose 方法，通常随 App 生命周期销毁
   }
 }
