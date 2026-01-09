@@ -19,27 +19,36 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 👇👇👇 修改了这里：不锁死版本，使用最新版 Flutter 👇👇👇
+      # 使用最新的 Flutter 稳定版
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-      # 👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆👆
 
+      # 👇👇👇 【核心修改】强制生成安卓骨架 👇👇👇
+      # 无论 android 文件夹是否存在，都强制运行 create 命令
+      # 这会自动补全缺失的 settings.gradle 等文件
       - name: Create Android Project
         run: |
-          if [ ! -d "android" ]; then
-            flutter create . --platforms android --project-name lofter_repair_app
-          fi
+          echo "🔨 Generating Android Scaffolding..."
+          flutter create . --platforms android --project-name lofter_repair_app
 
+      # 👇👇👇 环境修复 (针对新生成的工程) 👇👇👇
       - name: Fix Android Environment
         run: |
-          # 修复 Kotlin 版本冲突
+          echo "🔧 Fixing Kotlin & MinSDK..."
+          
+          # 1. 修复 Kotlin 版本 (适配 share_plus 等新插件)
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
-          sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          # 修复 MinSDK
+          # 双保险：修改 build.gradle (防止旧版结构)
+          if [ -f "android/build.gradle" ]; then
+            sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
+          fi
+          
+          # 2. 修复 MinSDK (改为 21)
           sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
 
+      # 修改 APP 显示名称
       - name: Change App Name
         run: |
           MANIFEST_FILE=android/app/src/main/AndroidManifest.xml
@@ -48,11 +57,13 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
+      # 生成图标和启动页
       - name: Generate Assets
         run: |
           dart run flutter_launcher_icons
           dart run flutter_native_splash:create
 
+      # 生成签名证书
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -65,9 +76,11 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
+      # 打包 Release APK
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
+      # 重命名并上传
       - name: Rename and Upload
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
