@@ -1,4 +1,4 @@
-name: Flutter Native Build (No Plugin Hell)
+name: Flutter Native Safe Build
 on:
   workflow_dispatch:
 
@@ -33,13 +33,35 @@ jobs:
           rm -rf android
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
 
-      # 2. 注入 TFLite 和 OpenCV 依赖 (App级)
-      - name: Inject Dependencies
+      # 2. 注入依赖 (使用追加模式，绝对安全)
+      - name: Inject Dependencies safely
         run: |
           APP_GRADLE="android/app/build.gradle"
-          sed -i '/dependencies {/a \    implementation "org.tensorflow:tensorflow-lite:2.14.0"\n    implementation "org.tensorflow:tensorflow-lite-support:0.4.4"\n    implementation "com.quickbirdstudios:opencv:4.5.3.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"' $APP_GRADLE
-          sed -i '/android {/a \    packagingOptions {\n        pickFirst "lib/arm64-v8a/libc++_shared.so"\n        pickFirst "lib/armeabi-v7a/libc++_shared.so"\n    }' $APP_GRADLE
+          
+          # 技巧：不要试图插入到原有的 dependencies 块里，直接在文件末尾加一个新的块
+          # Gradle 会自动合并它们
+          cat >> $APP_GRADLE <<EOF
+          
+          dependencies {
+              implementation "org.tensorflow:tensorflow-lite:2.14.0"
+              implementation "org.tensorflow:tensorflow-lite-support:0.4.4"
+              implementation "com.quickbirdstudios:opencv:4.5.3.0"
+              implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
+          }
+          
+          android {
+              packagingOptions {
+                  pickFirst "lib/arm64-v8a/libc++_shared.so"
+                  pickFirst "lib/armeabi-v7a/libc++_shared.so"
+              }
+          }
+          EOF
+          
+          # 只保留这一个 sed，因为它很简单，不容易出错
           sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $APP_GRADLE
+          
+          echo "✅ 依赖已追加到文件末尾"
+          tail -n 20 $APP_GRADLE
 
       # 3. 注入业务代码
       - name: Inject Source Code
@@ -48,13 +70,35 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
 
-      # 4. 强制生成 local.properties (保险起见)
+      # 4. 生成 local.properties
       - name: Generate local.properties
         run: |
           echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
           echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
 
       # 5. 打包
+      - name: Generate Icon
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons
+
+      - name: Set App Name
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
+
+      - name: Generate Keystore
+        run: |
+          keytool -genkey -v -keystore upload-keystore.jks \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias upload -dname "CN=Android, OU=Android, O=Android, L=Android, S=Android, C=US" \
+            -storepass android -keypass android
+          
+          echo "storePassword=android" > android/key.properties
+          echo "keyPassword=android" >> android/key.properties
+          echo "keyAlias=upload" >> android/key.properties
+          echo "storeFile=../../upload-keystore.jks" >> android/key.properties
+
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
