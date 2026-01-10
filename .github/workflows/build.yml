@@ -1,17 +1,17 @@
-name: Build Android Release
+name: Flutter Build Release
 on:
   workflow_dispatch:
 
+# 👇 配置你的 APP 中文名 👇
 env:
-  APP_NAME: "去水印神器" # 你的APP中文名
-  FILE_NAME: "LofterFixer" # 下载的文件名
+  APP_CHINESE_NAME: "LOFTER去水印"
+  FILE_NAME: "LofterFixer_Release"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v3
 
       - name: Setup Java
@@ -25,28 +25,20 @@ jobs:
         with:
           flutter-version: '3.19.0'
           channel: 'stable'
-
-      # 1. 生成工程骨架
-      - name: Create Android Project
+      
+      # 生成图标
+      - name: Generate Icon
         run: |
-          if [ ! -d "android" ]; then
-            flutter create . --platforms android --project-name lofter_fixer
-          fi
+          flutter pub get
+          dart run flutter_launcher_icons
 
-      # 2. 注入中文名
+      # 👇 修改 APP 名称 (仅修改 Manifest 中的 label)
       - name: Set App Name
         run: |
-          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
 
-      # 3. 修复环境 (Kotlin版本冲突)
-      - name: Fix Android Environment
-        run: |
-          sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
-          sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
-          # 禁止TFLite压缩
-          echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
-
-      # 4. 生成签名
+      # 🔑 临时生成签名 (保证能安装)
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -59,16 +51,15 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      - name: Install Dependencies
-        run: flutter pub get
-
-      # 5. 打包 (只打Arm64以减小体积)
+      # 📦 开启混淆打包 (Release + Arm64)
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
-      # 6. 上传
-      - name: Upload Artifact
+      - name: Rename APK
+        run: mv build/app/outputs/flutter-apk/app-release.apk ${{ env.FILE_NAME }}.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FILE_NAME }}_Release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: ${{ env.FILE_NAME }}
+          path: ${{ env.FILE_NAME }}.apk
