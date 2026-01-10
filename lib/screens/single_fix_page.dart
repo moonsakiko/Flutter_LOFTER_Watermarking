@@ -5,7 +5,7 @@ import 'package:gal/gal.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/yolo_service.dart';
 import '../services/image_processor.dart';
-import '../utils/cleaner.dart'; // 👈 引入清道夫
+import '../utils/cleaner.dart';
 
 class SingleFixPage extends StatefulWidget {
   const SingleFixPage({super.key});
@@ -26,13 +26,15 @@ class _SingleFixPageState extends State<SingleFixPage> {
   @override
   void initState() {
     super.initState();
-    // 👇 进页面先打扫卫生
+    // ✅ 进页面时清理一次旧垃圾
     Cleaner.nukeCache();
+    // 预加载模型
+    _yoloService.initModel();
   }
 
   Future<void> _pickImage(bool isWm) async {
-    // 👇 选图前也打扫一下，防止上次残留
-    await Cleaner.nukeCache();
+    // ❌ 删掉这行！不要在这里清理，否则选第二张图时会把第一张删掉！
+    // await Cleaner.nukeCache(); 
     
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
     if (result != null) {
@@ -42,6 +44,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
         } else {
           origFile = File(result.files.single.path!);
         }
+        // 如果重新选了图，就把上次的结果清空
         resultFile = null;
       });
     }
@@ -53,12 +56,18 @@ class _SingleFixPageState extends State<SingleFixPage> {
       return;
     }
 
+    // 再次检查文件是否存在 (防止意外被删)
+    if (!wmFile!.existsSync() || !origFile!.existsSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("图片文件丢失，请重新选择")));
+      return;
+    }
+
     setState(() => isProcessing = true);
 
     try {
       final box = await _yoloService.detectWatermark(wmFile!.path);
       if (box == null) {
-        throw Exception("AI 未能检测到水印");
+        throw Exception("AI 未能检测到水印，请尝试更清晰的图片");
       }
 
       final fixedFile = await _imageProcessor.repairImage(wmFile!.path, origFile!.path, box);
@@ -76,9 +85,14 @@ class _SingleFixPageState extends State<SingleFixPage> {
         ),
       );
     } finally {
-      // 👇 任务结束（无论成功失败），打扫战场
+      // ✅ 任务结束后（无论成功失败），统一清理垃圾
+      // 这次为了防止把生成的 resultFile 也删了，我们延时一点点或仅清理 picker 缓存
+      // 为了稳妥，我们放在这里清理，因为 resultFile 是存放在 app document 里的，不会被 nukeCache (只删 temp) 误删
       await Cleaner.nukeCache();
-      setState(() => isProcessing = false);
+      
+      if (mounted) {
+        setState(() => isProcessing = false);
+      }
     }
   }
 
@@ -96,9 +110,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
 
   @override
   Widget build(BuildContext context) {
-    // ... UI 代码保持不变 ...
-    // 为了节省篇幅，这里省略 UI 构建代码，直接复制之前的 build 方法即可
-    // 记得 _pickImage 调用逻辑已经改了
     return Scaffold(
       appBar: AppBar(title: const Text("单图精修")),
       body: SingleChildScrollView(
@@ -112,7 +123,9 @@ class _SingleFixPageState extends State<SingleFixPage> {
                 Expanded(child: _buildSelector(origFile, "选择原图", false)),
               ],
             ),
+            
             const SizedBox(height: 20),
+            
             FilledButton.icon(
               onPressed: isProcessing ? null : _startRepair,
               icon: isProcessing 
@@ -121,7 +134,9 @@ class _SingleFixPageState extends State<SingleFixPage> {
               label: Text(isProcessing ? "AI 正在修复..." : "开始修复"),
               style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
             ),
+
             const SizedBox(height: 20),
+
             if (resultFile != null) ...[
               const Divider(),
               const Text("修复结果", style: TextStyle(fontWeight: FontWeight.bold)),
