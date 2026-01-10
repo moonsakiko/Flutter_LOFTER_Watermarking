@@ -1,4 +1,4 @@
-name: Flutter Cloud Injection Build
+name: Flutter Cloud Surgical Build
 on:
   workflow_dispatch:
 
@@ -27,46 +27,110 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      # ----------------------------------------------------------------
-      # 🏗️ 核心步骤 1：云端造壳
-      # ----------------------------------------------------------------
+      # =========================================================
+      # 🏗️ 阶段一：云端造壳 (生成标准工程)
+      # =========================================================
       - name: Generate Scaffolding
         run: |
-          # 1. 清理旧文件
           rm -rf android
-          
-          # 2. 生成标准骨架 (此时默认是 Gradle 7.6.3)
+          # 生成标准安卓骨架 (默认 Gradle 7.6)
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
-          
-          echo "✅ 标准骨架已生成"
+          echo "✅ 标准骨架生成完毕"
 
-      # ----------------------------------------------------------------
-      # 🆙 核心步骤 2：【新增】暴力升级 Gradle 引擎
-      # ----------------------------------------------------------------
-      - name: Upgrade Gradle Wrapper to 8.0
+      # =========================================================
+      # 🔧 阶段二：心脏移植 (强制升级 Gradle 引擎到 8.0)
+      # =========================================================
+      - name: Upgrade Gradle Wrapper
         run: |
-          echo "🔧 正在强制升级 Gradle 版本..."
-          WRAPPER_PROP="android/gradle/wrapper/gradle-wrapper.properties"
-          
-          # 使用 sed 命令，将里面的 7.x 版本直接替换为 8.0
-          sed -i 's/gradle-.*-all.zip/gradle-8.0-all.zip/g' $WRAPPER_PROP
-          
-          # 打印一下确认是否修改成功
-          cat $WRAPPER_PROP
-          echo "✅ Gradle 引擎已强制升级为 8.0"
+          # 这一步会自动下载并配置 Gradle 8.0 引擎，解决 "Minimum supported Gradle" 报错
+          cd android
+          gradle wrapper --gradle-version 8.0 --distribution-type all
+          cd ..
+          echo "✅ Gradle 引擎已升级到 8.0"
 
-      # ----------------------------------------------------------------
-      # 💉 核心步骤 3：注入灵魂
-      # ----------------------------------------------------------------
+      # =========================================================
+      # 🧠 阶段三：神经连接 (重写 settings.gradle)
+      # =========================================================
+      # 这一步最关键！我们手动写入一个既包含插件连接，又锁定了新版本的配置文件。
+      # 解决了之前的 "Plugin not found" 问题。
+      - name: Patch settings.gradle
+        run: |
+          cat > android/settings.gradle <<EOF
+          pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file("local.properties").withInputStream { properties.load(it) }
+                  def flutterSdkPath = properties.getProperty("flutter.sdk")
+                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+                  return flutterSdkPath
+              }
+              settings.ext.flutterSdkPath = flutterSdkPath()
+          
+              includeBuild("\${settings.ext.flutterSdkPath}/packages/flutter_tools/gradle")
+          
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          
+              plugins {
+                  id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false
+                  // 👇 强制锁定版本，配合 Gradle 8.0
+                  id "com.android.application" version "8.1.0" apply false
+                  id "org.jetbrains.kotlin.android" version "1.9.0" apply false
+              }
+          }
+          
+          include ":app"
+          EOF
+          echo "✅ settings.gradle 已精准修正 (AGP 8.1.0 + Kotlin 1.9.0)"
+
+      # =========================================================
+      # 💪 阶段四：肢体强化 (修改 app/build.gradle)
+      # =========================================================
+      - name: Patch app/build.gradle
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          
+          # 1. 强制修改 MinSDK 为 24 (为了 TFLite)
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
+          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $BUILD_GRADLE
+          
+          # 2. 追加依赖库 (TFLite, OpenCV)
+          cat >> $BUILD_GRADLE <<EOF
+          
+          dependencies {
+              implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+              implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
+              implementation 'com.quickbirdstudios:opencv:4.5.3.0'
+              implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
+          }
+          EOF
+          
+          # 3. 确保 namespace 正确
+          # Flutter 3.19 有时生成的 namespace 是 "android"，这里强制修正
+          sed -i 's/namespace .*/namespace "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"/g' $BUILD_GRADLE
+          
+          echo "✅ app/build.gradle 已注入依赖"
+
+      # =========================================================
+      # 💉 阶段五：注入灵魂 (覆盖你的代码)
+      # =========================================================
       - name: Inject Custom Code
         run: |
-          echo "🚚 正在将 android_overlay 的内容注入到 android 目录..."
-          cp -rf android_overlay/* android/
-          echo "✅ 代码注入完毕！"
+          # 覆盖 Manifest
+          cp -f android_overlay/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          
+          # 覆盖 MainActivity.kt (先创建目录以防万一)
+          mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
+          cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
+          
+          echo "✅ 核心代码注入完毕"
 
-      # ----------------------------------------------------------------
-      # 🔧 后续常规步骤
-      # ----------------------------------------------------------------
+      # =========================================================
+      # 🚀 阶段六：常规打包
+      # =========================================================
       - name: Generate Icon
         run: |
           flutter pub get
@@ -75,9 +139,7 @@ jobs:
       - name: Set App Name
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
-          fi
+          sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
 
       - name: Generate Keystore
         run: |
