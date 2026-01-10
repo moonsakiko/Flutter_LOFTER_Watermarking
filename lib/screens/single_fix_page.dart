@@ -1,9 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:gallery_saver/gallery_saver.dart';
+import 'package:gal/gal.dart'; // 👈 改用 gal
 import '../services/yolo_service.dart';
 import '../services/image_processor.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class SingleFixPage extends StatefulWidget {
   const SingleFixPage({super.key});
@@ -24,7 +25,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
   @override
   void initState() {
     super.initState();
-    // 预加载模型
     _yoloService.initModel();
   }
 
@@ -37,7 +37,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
         } else {
           origFile = File(result.files.single.path!);
         }
-        resultFile = null; // 重置结果
+        resultFile = null;
       });
     }
   }
@@ -51,13 +51,11 @@ class _SingleFixPageState extends State<SingleFixPage> {
     setState(() => isProcessing = true);
 
     try {
-      // 1. AI 识别
       final box = await _yoloService.detectWatermark(wmFile!.path);
       if (box == null) {
         throw Exception("AI 未能在图片中检测到水印");
       }
 
-      // 2. 图像处理
       final fixedFile = await _imageProcessor.repairImage(wmFile!.path, origFile!.path, box);
 
       setState(() {
@@ -82,8 +80,16 @@ class _SingleFixPageState extends State<SingleFixPage> {
 
   Future<void> _saveToGallery() async {
     if (resultFile != null) {
-      await GallerySaver.saveImage(resultFile!.path);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已保存到相册")));
+      try {
+        // 请求权限 (Gal 通常会自动处理，但为了保险)
+        await Permission.photos.request();
+        
+        // 👇 使用 Gal 保存
+        await Gal.putImage(resultFile!.path);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅ 已保存到相册")));
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("保存失败: $e")));
+      }
     }
   }
 
@@ -95,7 +101,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // 图片选择区
             Row(
               children: [
                 Expanded(child: _buildSelector(wmFile, "选择水印图", true)),
@@ -106,7 +111,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
             
             const SizedBox(height: 20),
             
-            // 操作按钮
             FilledButton.icon(
               onPressed: isProcessing ? null : _startRepair,
               icon: isProcessing 
@@ -118,7 +122,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
 
             const SizedBox(height: 20),
 
-            // 结果展示
             if (resultFile != null) ...[
               const Divider(),
               const Text("修复结果", style: TextStyle(fontWeight: FontWeight.bold)),

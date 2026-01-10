@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:gallery_saver/gallery_saver.dart';
+import 'package:gal/gal.dart'; // 👈 改用 gal
 import 'package:path/path.dart' as path;
+import 'package:permission_handler/permission_handler.dart';
 import '../services/yolo_service.dart';
 import '../services/image_processor.dart';
 import '../models/process_task.dart';
@@ -29,8 +30,6 @@ class _BatchFixPageState extends State<BatchFixPage> {
   }
 
   Future<void> _pickFolder() async {
-    // Android 上选择文件夹限制较多，这里简化为多选图片
-    // 实际操作中，让用户全选文件夹里的图片即可
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       type: FileType.image,
@@ -42,13 +41,11 @@ class _BatchFixPageState extends State<BatchFixPage> {
     }
   }
 
-  // 匹配逻辑：找 xxx-wm.jpg 和 xxx-orig.jpg
   void _matchPairs(List<File> files) {
     List<ProcessTask> newTasks = [];
     Map<String, File> wmMap = {};
     Map<String, File> origMap = {};
 
-    // 1. 分类
     for (var f in files) {
       String name = path.basenameWithoutExtension(f.path);
       if (name.endsWith('-wm')) {
@@ -60,7 +57,6 @@ class _BatchFixPageState extends State<BatchFixPage> {
       }
     }
 
-    // 2. 配对
     wmMap.forEach((base, wmFile) {
       if (origMap.containsKey(base)) {
         newTasks.add(ProcessTask(wmFile: wmFile, origFile: origMap[base]!));
@@ -80,6 +76,9 @@ class _BatchFixPageState extends State<BatchFixPage> {
   }
 
   Future<void> _startBatchProcess() async {
+    // 提前请求权限
+    await Permission.photos.request();
+
     setState(() {
       isProcessing = true;
       successCount = 0;
@@ -87,6 +86,8 @@ class _BatchFixPageState extends State<BatchFixPage> {
 
     for (int i = 0; i < tasks.length; i++) {
       var task = tasks[i];
+      if (!mounted) break;
+      
       setState(() => task.status = 'processing');
 
       try {
@@ -100,8 +101,9 @@ class _BatchFixPageState extends State<BatchFixPage> {
         }
 
         final fixedFile = await _imageProcessor.repairImage(task.wmFile.path, task.origFile.path, box);
-        // 自动保存到相册
-        await GallerySaver.saveImage(fixedFile.path);
+        
+        // 👇 自动保存到相册 (改用 Gal)
+        await Gal.putImage(fixedFile.path);
 
         setState(() {
           task.status = 'success';
@@ -118,7 +120,9 @@ class _BatchFixPageState extends State<BatchFixPage> {
     }
 
     setState(() => isProcessing = false);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("批处理完成，成功 $successCount 张")));
+    if(mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("批处理完成，成功 $successCount 张")));
+    }
   }
 
   @override

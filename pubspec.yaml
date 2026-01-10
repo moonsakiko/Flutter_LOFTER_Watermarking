@@ -18,7 +18,7 @@ dependencies:
   file_picker: ^6.1.1       # 文件选择
   path_provider: ^2.1.2     # 路径获取
   permission_handler: ^11.3.0 # 权限申请
-  gallery_saver: ^2.3.2     # 保存图片到相册
+  gal: ^2.3.0    # 保存图片到相册
   path: ^1.9.0              # 路径字符串处理
 
   # 🎨 UI 组件
