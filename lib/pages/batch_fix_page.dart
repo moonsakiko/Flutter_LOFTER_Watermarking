@@ -30,7 +30,7 @@ class _BatchFixPageState extends State<BatchFixPage> {
 
     if (result != null) {
       setState(() {
-        _selectedFiles = result.paths.map((path) => File(path!)).toList();
+        _selectedFiles = result.paths.where((path) => path != null).map((path) => File(path!)).toList();
         _logs = ["已选择 ${_selectedFiles.length} 个文件，准备处理..."];
       });
     }
@@ -50,7 +50,6 @@ class _BatchFixPageState extends State<BatchFixPage> {
 
     // 自动配对逻辑
     // 假设命名规则： xxx-wm.jpg (水印) 和 xxx-orig.jpg (原图/无水印)
-    // 或者直接把名字相似的配对
     
     // 1. 寻找水印图
     var wmFiles = _selectedFiles.where((f) => p.basename(f.path).contains("wm")).toList();
@@ -58,7 +57,6 @@ class _BatchFixPageState extends State<BatchFixPage> {
     for (var wmFile in wmFiles) {
       String baseName = p.basename(wmFile.path).replaceAll("-wm", "").replaceAll("wm", ""); 
       // 尝试找对应的原图
-      // 简单逻辑：在已选列表中找名字包含 baseName 且不含 wm 的
       File? noWmFile;
       try {
         noWmFile = _selectedFiles.firstWhere(
@@ -108,7 +106,8 @@ class _BatchFixPageState extends State<BatchFixPage> {
         children: [
           Container(
             padding: const EdgeInsets.all(16),
-            color: Theme.of(context).colorScheme.surfaceContainer,
+            // 👈 关键修复：改为 surfaceVariant 以兼容旧版 Flutter
+            color: Theme.of(context).colorScheme.surfaceVariant, 
             child: Column(
               children: [
                 const Text("使用说明：请同时选择“水印图”和“无水印图”。\n系统将根据文件名自动配对 (如 A-wm.jpg 和 A-orig.jpg)"),

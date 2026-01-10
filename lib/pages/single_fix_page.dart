@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:file_picker/file_picker.dart'; // 用于保存
+import 'package:file_picker/file_picker.dart'; 
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../logic/yolo_service.dart';
@@ -36,6 +36,10 @@ class _SingleFixPageState extends State<SingleFixPage> {
   }
 
   Future<void> _pickImage(bool isWm) async {
+    // 请求权限
+    await Permission.storage.request();
+    await Permission.photos.request();
+
     final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
     if (image != null) {
       setState(() {
@@ -54,34 +58,38 @@ class _SingleFixPageState extends State<SingleFixPage> {
 
     setState(() => isProcessing = true);
     try {
-      // 重新加载最新配置
       await _loadSettings();
       
       final result = await _yoloService.repairImage(wmFile!.path, noWmFile!.path);
       
       if (result == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未检测到水印，无需修复')));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未检测到水印，无需修复')));
+        }
       } else {
         setState(() => resultBytes = result);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('处理出错: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('处理出错: $e')));
+      }
     } finally {
-      setState(() => isProcessing = false);
+      if (mounted) {
+        setState(() => isProcessing = false);
+      }
     }
   }
 
   Future<void> _saveImage() async {
     if (resultBytes == null) return;
     
-    // 简单的保存逻辑，或者使用 file_picker 另存为
     String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: '保存修复后的图片',
       fileName: 'repaired_${DateTime.now().millisecondsSinceEpoch}.jpg',
       bytes: resultBytes,
     );
 
-    if (outputFile != null) {
+    if (outputFile != null && mounted) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('图片已保存')));
     }
   }
@@ -94,7 +102,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // 图片选择区
             Row(
               children: [
                 _buildImageCard("水印图 (有字)", wmFile, () => _pickImage(true)),
@@ -104,7 +111,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
             ),
             const SizedBox(height: 20),
             
-            // 按钮
             SizedBox(
               width: double.infinity,
               height: 50,
@@ -119,7 +125,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
             
             const SizedBox(height: 20),
             
-            // 结果展示
             if (resultBytes != null) ...[
               const Divider(),
               const Text("修复结果", style: TextStyle(fontWeight: FontWeight.bold)),
@@ -132,7 +137,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
               OutlinedButton.icon(
                 onPressed: _saveImage,
                 icon: const Icon(Icons.save_alt),
-                label: const Text("保存到相册"),
+                label: const Text("保存到文件"),
               )
             ]
           ],
@@ -148,7 +153,8 @@ class _SingleFixPageState extends State<SingleFixPage> {
         child: Container(
           height: 150,
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            // 👈 关键修复：改为 surfaceVariant
+            color: Theme.of(context).colorScheme.surfaceVariant,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.grey.withOpacity(0.3)),
             image: file != null 
