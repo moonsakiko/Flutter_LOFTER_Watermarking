@@ -2,7 +2,6 @@ name: Flutter Build Release
 on:
   workflow_dispatch:
 
-# 👇 配置你的 APP 中文名 👇
 env:
   APP_CHINESE_NAME: "LOFTER去水印"
   FILE_NAME: "LofterFixer_Release"
@@ -26,19 +25,31 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
       
-      # 生成图标
+      # 1. 生成图标
       - name: Generate Icon
         run: |
           flutter pub get
           dart run flutter_launcher_icons
 
-      # 👇 修改 APP 名称 (仅修改 Manifest 中的 label)
+      # 👇👇👇 【绝杀招】现场修复缺失的 Gradle 引擎 👇👇👇
+      # 这步会重新生成 gradle-wrapper.jar 和 properties，强制使用 8.0 版本
+      - name: Fix Gradle Wrapper
+        run: |
+          cd android
+          # 使用系统 Gradle 强制生成 8.0 版本的 wrapper 文件
+          gradle wrapper --gradle-version 8.0 --distribution-type all
+          # 赋予执行权限
+          chmod +x gradlew
+          cd ..
+      # 👆👆👆 这步将彻底解决 "版本不匹配" 问题 👆👆👆
+
+      # 2. 修改 APP 名称
       - name: Set App Name
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
 
-      # 🔑 临时生成签名 (保证能安装)
+      # 3. 临时生成签名
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -51,7 +62,7 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      # 📦 开启混淆打包 (Release + Arm64)
+      # 4. 打包
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
