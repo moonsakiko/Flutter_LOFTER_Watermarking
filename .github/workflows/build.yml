@@ -1,8 +1,11 @@
-name: Flutter Build Release
+name: Flutter Cloud Injection Build
 on:
   workflow_dispatch:
 
 env:
+  # 必须和 MainActivity.kt 里的 package 保持一致
+  ORG_NAME: "com.example"
+  PROJECT_NAME: "lofter_fixer"
   APP_CHINESE_NAME: "LOFTER去水印"
   FILE_NAME: "LofterFixer_Release"
 
@@ -24,32 +27,49 @@ jobs:
         with:
           flutter-version: '3.19.0'
           channel: 'stable'
-      
-      # 1. 生成图标
+
+      # ----------------------------------------------------------------
+      # 🏗️ 核心步骤 1：云端造壳
+      # ----------------------------------------------------------------
+      - name: Generate Scaffolding
+        run: |
+          # 1. 如果本地存在旧的 android 文件夹，先删掉，防止干扰
+          rm -rf android
+          
+          # 2. 让 Flutter 官方命令生成最标准的安卓工程
+          # 这会自动生成正确的 Gradle Wrapper (gradlew) 和目录结构
+          flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
+          
+          echo "✅ 标准骨架已生成"
+
+      # ----------------------------------------------------------------
+      # 💉 核心步骤 2：注入灵魂 (关键！)
+      # ----------------------------------------------------------------
+      - name: Inject Custom Code
+        run: |
+          echo "🚚 正在将 android_overlay 的内容注入到 android 目录..."
+          
+          # 强制覆盖 (-f), 递归 (-r)
+          # 把我们准备好的核心代码，覆盖到刚刚生成的骨架里
+          cp -rf android_overlay/* android/
+          
+          echo "✅ 代码注入完毕！"
+
+      # ----------------------------------------------------------------
+      # 🔧 后续常规步骤
+      # ----------------------------------------------------------------
       - name: Generate Icon
         run: |
           flutter pub get
           dart run flutter_launcher_icons
 
-      # 👇👇👇 【绝杀招】现场修复缺失的 Gradle 引擎 👇👇👇
-      # 这步会重新生成 gradle-wrapper.jar 和 properties，强制使用 8.0 版本
-      - name: Fix Gradle Wrapper
-        run: |
-          cd android
-          # 使用系统 Gradle 强制生成 8.0 版本的 wrapper 文件
-          gradle wrapper --gradle-version 8.0 --distribution-type all
-          # 赋予执行权限
-          chmod +x gradlew
-          cd ..
-      # 👆👆👆 这步将彻底解决 "版本不匹配" 问题 👆👆👆
-
-      # 2. 修改 APP 名称
       - name: Set App Name
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
+          if [ -f "$MANIFEST" ]; then
+            sed -i 's/android:label=".*"/android:label="${{ env.APP_CHINESE_NAME }}"/g' $MANIFEST
+          fi
 
-      # 3. 临时生成签名
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -62,14 +82,13 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      # 4. 打包
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
-      - name: Rename APK
+      - name: Rename and Upload
         run: mv build/app/outputs/flutter-apk/app-release.apk ${{ env.FILE_NAME }}.apk
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.FILE_NAME }}
