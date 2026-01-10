@@ -19,7 +19,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # ✅ 保持 3.27.1，配合 pubspec 中的 0.1.19 插件
+      # 保持 3.27.1
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -36,17 +36,25 @@ jobs:
         run: |
           sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
 
-      # 👇👇👇 重点修复：精准修改 MinSDK，不破坏文件结构 👇👇👇
       - name: Fix Android Environment
         run: |
           # 1. 修复 Kotlin 版本
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
           
-          # 2. 修复 MinSDK (精准替换 flutter.minSdkVersion 变量，而不是替换整行)
-          # 原文通常是: minSdkVersion flutter.minSdkVersion
-          # 替换后变成: minSdkVersion 21
+          # 2. 修复 MinSDK
           sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
+
+      # 👇👇👇 【新增步骤】配置混淆规则，忽略 R8 报错 👇👇👇
+      - name: Configure ProGuard Rules
+        run: |
+          echo "🔧 Creating proguard-rules.pro..."
+          # 创建混淆规则文件，忽略 java.beans 和 snakeyaml 的警告
+          echo "-dontwarn java.beans.**" > android/app/proguard-rules.pro
+          echo "-dontwarn java.awt.**" >> android/app/proguard-rules.pro
+          echo "-dontwarn org.yaml.snakeyaml.**" >> android/app/proguard-rules.pro
+          echo "-keep class org.yaml.snakeyaml.** { *; }" >> android/app/proguard-rules.pro
+          echo "-keep class com.ultralytics.** { *; }" >> android/app/proguard-rules.pro
 
       - name: Install Dependencies
         run: flutter pub get
@@ -64,7 +72,8 @@ jobs:
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
       - name: Build APK
-        run: flutter build apk --release --target-platform android-arm64
+        # 增加 --no-tree-shake-icons 防止图标报错，虽然不是必须但更稳
+        run: flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
 
       - name: Rename and Upload
         run: |
