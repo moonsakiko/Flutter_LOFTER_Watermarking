@@ -1,14 +1,18 @@
-name: Flutter Build LOFTER Remover
+name: Lofter Remover Build
 on:
   workflow_dispatch:
 
 env:
-  APP_NAME: "LOFTER去水印"
-  # 请确保你的 assets/models/best_float16.tflite 已经上传到仓库！
+  APP_LABEL: "LOFTER去水印"
+  FILE_NAME: "Lofter_Remover"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # 设置 UTF-8 环境，防止中文乱码
+    env:
+      LANG: "en_US.UTF-8"
 
     steps:
       - name: Checkout Code
@@ -26,38 +30,64 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
+      # 1. 创建工程
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
-            # 使用蛇形命名法
             flutter create . --platforms android --project-name lofter_remover
           fi
 
-      # 🔧 修复环境 (关键步骤，解决新插件冲突)
+      # 2. 注入中文名
+      - name: Set App Name
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 -c "
+          import re
+          with open('$MANIFEST', 'r', encoding='utf-8') as f: content = f.read()
+          new_content = re.sub(r'android:label=\"[^\"]*\"', 'android:label=\"${{ env.APP_LABEL }}\"', content)
+          with open('$MANIFEST', 'w', encoding='utf-8') as f: f.write(new_content)
+          "
+
+      # 3. 修复环境 (关键步骤：解决插件版本冲突)
       - name: Fix Android Environment
         run: |
+          # 强制 Kotlin 1.9.0
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
+          
+          # 强制 MinSDK 21 (TFLite 需要)
           sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
           
-          # 这一步是为了防止 TFLite 插件编译时的压缩问题
-          echo "android.enableR8=true" >> android/gradle.properties
-
-      # 🏷️ 修改中文名
-      - name: Change App Name
-        run: |
-          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
+          # 这一步是为了 tflite_flutter 的动态库不被压缩，防止加载失败
+          echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
 
-      # 这里演示打 Debug 包 (免签名，适合快速测试)
-      # 如果你需要正式签名，请参考上一篇教程恢复 Keystore 部分
-      - name: Build APK (Debug)
-        run: flutter build apk --debug --target-platform android-arm64
+      # 4. 生成临时签名
+      - name: Generate Keystore
+        run: |
+          keytool -genkey -v -keystore upload-keystore.jks \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias upload -dname "CN=Android, OU=Android, O=Android, L=Android, S=Android, C=US" \
+            -storepass android -keypass android
+          
+          echo "storePassword=android" > android/key.properties
+          echo "keyPassword=android" >> android/key.properties
+          echo "keyAlias=upload" >> android/key.properties
+          echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      - name: Upload APK
+      # 5. 打包 Arm64 (Release)
+      - name: Build APK
+        run: flutter build apk --release --target-platform android-arm64
+
+      # 6. 上传
+      - name: Rename and Upload
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk "${{ env.FILE_NAME }}.apk"
+      
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lofter-remover-debug
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: ${{ env.FILE_NAME }}_Install_Package
+          path: "${{ env.FILE_NAME }}.apk"
