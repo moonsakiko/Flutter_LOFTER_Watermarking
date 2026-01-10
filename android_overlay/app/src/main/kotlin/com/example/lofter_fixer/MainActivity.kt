@@ -1,7 +1,11 @@
 package com.example.lofter_fixer
 
+import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -20,7 +24,9 @@ import org.tensorflow.lite.support.common.ops.NormalizeOp
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
-import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.lofter_fixer/processor"
@@ -29,11 +35,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
-        // 初始化 OpenCV
-        if (!OpenCVLoader.initDebug()) {
-            println("❌ OpenCV 加载失败!")
-        }
+        OpenCVLoader.initDebug()
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "processOneImage") {
@@ -41,34 +43,32 @@ class MainActivity : FlutterActivity() {
                 val cleanPath = call.argument<String>("clean")
                 val confThreshold = call.argument<Double>("confidence")?.toFloat() ?: 0.5f
 
-                if (wmPath == null || cleanPath == null) {
-                    result.error("ARGS_ERROR", "图片路径为空", null)
-                    return@setMethodCallHandler
-                }
-
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        // 懒加载模型
                         if (tflite == null) {
                             val modelFile = FileUtil.loadMappedFile(context, "flutter_assets/assets/best_float16.tflite")
-                            val options = Interpreter.Options()
-                            tflite = Interpreter(modelFile, options)
+                            tflite = Interpreter(modelFile)
                         }
 
-                        val bytes = processImage(wmPath, cleanPath, confThreshold)
+                        // 1. 处理图片
+                        val fixedBitmap = processImage(wmPath!!, cleanPath!!, confThreshold)
                         
-                        withContext(Dispatchers.Main) {
-                            if (bytes != null) {
-                                result.success(bytes) // ✅ 返回二进制数据给 Flutter
-                            } else {
-                                result.success(null) // 没识别到
+                        if (fixedBitmap != null) {
+                            // 2. ✅ 核心修改：在 Kotlin 这一层直接保存到相册
+                            val savedPath = saveToGallery(fixedBitmap, File(wmPath).name)
+                            withContext(Dispatchers.Main) {
+                                if (savedPath != null) {
+                                    result.success(savedPath) // 返回保存路径
+                                } else {
+                                    result.error("SAVE_ERR", "保存到相册失败", null)
+                                }
                             }
+                        } else {
+                            withContext(Dispatchers.Main) { result.success(null) } // 没识别到
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        withContext(Dispatchers.Main) {
-                            result.error("PROCESS_ERROR", e.message, null)
-                        }
+                        withContext(Dispatchers.Main) { result.error("ERR", e.message, null) }
                     }
                 }
             } else {
@@ -77,45 +77,80 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun processImage(wmPath: String, cleanPath: String, confThreshold: Float): ByteArray? {
+    // ... (保留之前的 processImage, parseOutput, convertToRect, repairWithOpenCV 方法) ...
+    // 为节省篇幅，这里假设你保留了之前的算法逻辑，只要把 saveToGallery 加进去即可
+    
+    private fun processImage(wmPath: String, cleanPath: String, confThreshold: Float): Bitmap? {
         val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return null
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return null
 
-        // 1. TFLite 预处理
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
             .add(NormalizeOp(0f, 255f))
             .build()
-        
         var tImage = TensorImage.fromBitmap(wmBitmap)
         tImage = imageProcessor.process(tImage)
 
-        // 2. 推理
         val outputTensor = tflite!!.getOutputTensor(0)
-        val outputShape = outputTensor.shape() // [1, 5, 8400] or [1, 8400, 5]
+        val outputShape = outputTensor.shape()
         val dim1 = outputShape[1]
         val dim2 = outputShape[2]
         val outputArray = Array(1) { Array(dim1) { FloatArray(dim2) } }
         tflite!!.run(tImage.buffer, outputArray)
 
-        // 3. 解析结果 (兼容转置)
         val bestBox = if (dim1 > dim2) {
              parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height)
         } else {
              parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height)
         }
 
-        if (bestBox == null) return null // 没找到水印
-
-        // 4. OpenCV 修复
-        val fixedBitmap = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox)
-
-        // 5. 转为 ByteArray
-        val stream = ByteArrayOutputStream()
-        fixedBitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream)
-        return stream.toByteArray()
+        if (bestBox == null) return null
+        return repairWithOpenCV(wmBitmap, cleanBitmap, bestBox)
     }
 
+    // 👇👇👇 核心：原生保存逻辑 (彻底替代 gal 插件) 👇👇👇
+    private fun saveToGallery(bitmap: Bitmap, originalName: String): String? {
+        val filename = "Fixed_${System.currentTimeMillis()}_$originalName"
+        var fos: OutputStream? = null
+        var savePath: String? = null
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+ 使用 MediaStore (无需权限)
+                val resolver = context.contentResolver
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/LofterFixed")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                fos = imageUri?.let { resolver.openOutputStream(it) }
+                savePath = imageUri?.toString()
+                
+                fos?.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+                
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                imageUri?.let { resolver.update(it, contentValues, null, null) }
+            } else {
+                // Android 9- 使用传统文件 (需权限，Flutter端已申请)
+                val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).toString() + File.separator + "LofterFixed"
+                val file = File(imagesDir)
+                if (!file.exists()) file.mkdirs()
+                val image = File(imagesDir, "$filename.jpg")
+                fos = FileOutputStream(image)
+                fos.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+                savePath = image.absolutePath
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+        return savePath
+    }
+    
+    // ... (请确保 parseOutputStandard, parseOutputTransposed, convertToRect, repairWithOpenCV 都在类里面) ...
     private fun parseOutputStandard(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int): Rect? {
         val numAnchors = rows[0].size 
         var maxConf = 0f
@@ -146,11 +181,8 @@ class MainActivity : FlutterActivity() {
         val finalY = ((cy - h / 2) * scaleY).toInt()
         val finalW = (w * scaleX).toInt()
         val finalH = (h * scaleY).toInt()
-        
-        // 适当扩大修复区域
         val paddingW = (finalW * 0.2).toInt()
         val paddingH = (finalH * 0.1).toInt()
-        
         return Rect(
             (finalX - paddingW).coerceAtLeast(0),
             (finalY - paddingH).coerceAtLeast(0),
@@ -162,21 +194,15 @@ class MainActivity : FlutterActivity() {
     private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect): Bitmap {
         val wmMat = Mat(); val cleanMat = Mat()
         Utils.bitmapToMat(wmBm, wmMat); Utils.bitmapToMat(cleanBm, cleanMat)
-        
-        // 确保原图缩放至水印图大小 (LANCZOS4 插值最清晰)
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
-        
-        // 安全裁剪
         val safeRect = Rect(
             rect.x.coerceIn(0, wmMat.cols()), rect.y.coerceIn(0, wmMat.rows()),
             rect.width.coerceAtMost(wmMat.cols() - rect.x), rect.height.coerceAtMost(wmMat.rows() - rect.y)
         )
-
         if (safeRect.width > 0 && safeRect.height > 0) {
             val patch = cleanMat.submat(safeRect)
             patch.copyTo(wmMat.submat(safeRect))
         }
-        
         val resultBm = Bitmap.createBitmap(wmMat.cols(), wmMat.rows(), Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(wmMat, resultBm)
         return resultBm

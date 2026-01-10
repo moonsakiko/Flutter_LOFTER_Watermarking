@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:gal/gal.dart'; 
 import 'dart:io';
 
 void main() {
@@ -20,7 +19,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.cyan),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         scaffoldBackgroundColor: const Color(0xFFF5F7FA),
         cardTheme: CardTheme(
           elevation: 0,
@@ -42,35 +41,32 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  // 必须与 Kotlin 端的 CHANNEL 保持一致
   static const platform = MethodChannel('com.example.lofter_fixer/processor');
 
   double _confidence = 0.4;
   String? _wmPath;
   String? _noWmPath;
   bool _isProcessing = false;
-  String _log = "👋 欢迎使用！\n📂 修复后的图片将直接保存到系统相册";
+  String _log = "👋 欢迎使用！\n📂 修复后的图片将保存至相册的 LofterFixed 文件夹";
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _checkPermissions();
   }
 
-  // --- 权限与保存逻辑 ---
-  Future<bool> _requestAccess() async {
-    try {
-      bool hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        await Gal.requestAccess();
-        return await Gal.hasAccess();
-      }
-      return true;
-    } catch (e) {
-      _showToast("权限申请失败: $e");
-      return false;
-    }
+  // 虽然保存图片交给了 Kotlin (Android 10+ 免权限)，但读取图片仍需权限
+  Future<void> _checkPermissions() async {
+    await [
+      Permission.storage,
+      Permission.photos,
+      Permission.manageExternalStorage, // Android 11+ 部分机型需要
+    ].request();
   }
 
+  // --- 图片选择逻辑 ---
   Future<void> _pickImage(bool isWm) async {
     final ImagePicker picker = ImagePicker();
     final XFile? image = await picker.pickImage(source: ImageSource.gallery);
@@ -82,38 +78,34 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  // --- 单张处理 ---
-  Future<void> _processSingle() async {
-    if (_wmPath == null || _noWmPath == null) {
-      _showToast("请先选择两张图片");
-      return;
-    }
-    if (!await _requestAccess()) return;
-    
-    _addLog("⏳ 开始修复单张图片...");
-    await _runNativeRepair([{'wm': _wmPath!, 'clean': _noWmPath!}]);
-  }
-
-  // --- 批量处理 ---
   Future<void> _pickFilesBatch() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(allowMultiple: true, type: FileType.image);
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      allowMultiple: true, 
+      type: FileType.image
+    );
+    
     if (result != null) {
       List<String> files = result.paths.whereType<String>().toList();
       _matchAndProcess(files);
     }
   }
 
-  void _matchAndProcess(List<String> files) async {
+  // --- 批量匹配逻辑 ---
+  void _matchAndProcess(List<String> files) {
     List<Map<String, String>> tasks = [];
+    // 寻找所有带 -wm 的图片
     List<String> wmFiles = files.where((f) => f.toLowerCase().contains("-wm.")).toList();
     
     for (var wm in wmFiles) {
+      // 尝试匹配对应的 -orig 图片
       String expectedOrig = wm.replaceAll(RegExp(r'-wm\.', caseSensitive: false), '-orig.');
       String? foundOrig;
+      
       try {
         foundOrig = files.firstWhere((f) => f == expectedOrig);
       } catch (e) {
         try {
+          // 尝试忽略大小写匹配
           foundOrig = files.firstWhere((f) => f.toLowerCase() == expectedOrig.toLowerCase());
         } catch (_) {}
       }
@@ -121,23 +113,22 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       if (foundOrig != null) {
         tasks.add({'wm': wm, 'clean': foundOrig});
       } else {
-        _addLog("⚠️ 跳过无配对原图: ${wm.split('/').last}");
+        _addLog("⚠️ 跳过无原图: ${wm.split('/').last}");
       }
     }
 
     if (tasks.isEmpty) {
-      _addLog("❌ 未找到任何匹配对 (-wm 和 -orig)");
-      return;
+      _addLog("❌ 未找到匹配对。请确保文件名为 xxx-wm.jpg 和 xxx-orig.jpg");
+    } else {
+      _addLog("📦 匹配成功: ${tasks.length} 组任务");
+      _runNativeRepair(tasks);
     }
-    
-    if (!await _requestAccess()) return;
-
-    _addLog("📦 准备修复 ${tasks.length} 组图片...");
-    await _runNativeRepair(tasks);
   }
 
-  // --- 核心：调用原生并保存 ---
+  // --- 核心：调用 Kotlin 原生代码 ---
   Future<void> _runNativeRepair(List<Map<String, String>> tasks) async {
+    if (tasks.isEmpty) return;
+    
     setState(() => _isProcessing = true);
     int successCount = 0;
 
@@ -147,54 +138,60 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         String fileName = task['wm']!.split('/').last;
         
         try {
-          // 1. 调用 Kotlin，获取 Bytes
-          final Uint8List? imageBytes = await platform.invokeMethod('processOneImage', {
+          // 👇 调用原生方法 processOneImage
+          // Kotlin 处理完后会直接保存，并返回保存路径 (String)
+          final String? savedPath = await platform.invokeMethod('processOneImage', {
             'wm': task['wm'],
             'clean': task['clean'],
             'confidence': _confidence,
           });
 
-          if (imageBytes != null && imageBytes.isNotEmpty) {
-            // 2. Flutter 保存到相册
-            await Gal.putImageBytes(imageBytes, name: "Fixed_$fileName");
+          if (savedPath != null) {
             successCount++;
-            _addLog("✅ 成功: $fileName");
+            _addLog("✅ 成功: $fileName\n   📍 $savedPath");
           } else {
-             _addLog("❌ 失败 (未识别/置信度低): $fileName");
+             _addLog("❌ 未识别/置信度低: $fileName");
           }
         } on PlatformException catch (e) {
-          _addLog("🚫 错误 ($fileName): ${e.message}");
+          _addLog("🚫 原生错误 ($fileName): ${e.message}");
         }
       }
       
-      String msg = "🎉 任务结束。成功修复 $successCount / ${tasks.length} 张";
-      _addLog(msg);
-      _showToast(successCount > 0 ? "修复完成，请查看相册" : "修复失败");
+      _addLog("🎉 任务结束。成功: $successCount / ${tasks.length}");
+      _showSnack(successCount > 0 ? "修复完成，请查看系统相册" : "没有图片被修复");
 
     } catch (e) {
-      _addLog("🔥 系统异常: $e");
+      _addLog("🔥 异常: $e");
     } finally {
       setState(() => _isProcessing = false);
     }
+  }
+
+  // --- 单张处理触发器 ---
+  Future<void> _processSingle() async {
+    if (_wmPath == null || _noWmPath == null) {
+      _showSnack("请先选择两张图片");
+      return;
+    }
+    _addLog("⏳ 开始处理单张图片...");
+    await _runNativeRepair([{'wm': _wmPath!, 'clean': _noWmPath!}]);
   }
 
   void _addLog(String msg) {
     setState(() => _log = "$msg\n$_log");
   }
   
-  // 👇 替换了原来的 Fluttertoast，使用原生 SnackBar
-  void _showToast(String msg) {
+  void _showSnack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
         behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.cyan[700],
-        duration: const Duration(seconds: 2),
-      ),
+        backgroundColor: Colors.teal,
+      )
     );
   }
 
-  // --- UI 构建部分 ---
+  // --- 界面构建 ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -205,9 +202,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         elevation: 0,
         bottom: TabBar(
           controller: _tabController,
-          labelColor: Colors.cyan[700],
+          labelColor: Colors.teal,
           unselectedLabelColor: Colors.grey,
-          indicatorColor: Colors.cyan,
+          indicatorColor: Colors.teal,
           tabs: const [Tab(text: "单张精修"), Tab(text: "批量处理")],
         ),
       ),
@@ -240,13 +237,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text("🕵️ 侦探置信度", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("${(_confidence * 100).toInt()}%", style: TextStyle(color: Colors.cyan[700], fontWeight: FontWeight.bold)),
+              Text("${(_confidence * 100).toInt()}%", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
             ],
           ),
           Slider(
             value: _confidence,
             min: 0.1, max: 0.9, divisions: 8,
-            activeColor: Colors.cyan,
+            activeColor: Colors.teal,
             onChanged: (v) => setState(() => _confidence = v),
           ),
         ],
@@ -276,7 +273,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                 ? const SizedBox(width:20, height:20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
                 : const Icon(Icons.auto_fix_high),
               label: Text(_isProcessing ? "处理中..." : "开始修复"),
-              style: FilledButton.styleFrom(backgroundColor: Colors.cyan[600]),
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal),
             ),
           ),
           const SizedBox(height: 20),
@@ -290,7 +287,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.folder_copy_outlined, size: 80, color: Colors.cyan[200]),
+          Icon(Icons.folder_zip_outlined, size: 80, color: Colors.teal[200]),
           const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.all(16),
@@ -298,7 +295,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
             child: const Column(
               children: [
-                Text("文件名匹配规则", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text("匹配规则", style: TextStyle(fontWeight: FontWeight.bold)),
                 Divider(),
                 Text("水印图: xxx-wm.jpg", style: TextStyle(color: Colors.grey)),
                 Text("原图: xxx-orig.jpg", style: TextStyle(color: Colors.grey)),
@@ -308,8 +305,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           const SizedBox(height: 30),
           FilledButton(
             onPressed: _isProcessing ? null : _pickFilesBatch,
-            style: FilledButton.styleFrom(backgroundColor: Colors.cyan[600], padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
-            child: const Text("📂 选择图片并批量修复"),
+            style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
+            child: const Text("📂 批量选择图片"),
           ),
         ],
       ),
@@ -325,26 +322,5 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: path != null ? Colors.cyan : Colors.grey.shade300, width: 2),
-            image: path != null ? DecorationImage(image: FileImage(File(path)), fit: BoxFit.cover) : null,
-          ),
-          child: path == null 
-              ? Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.add_photo_alternate, color: Colors.grey[400], size: 40), Text(label, style: TextStyle(color: Colors.grey[600]))]) 
-              : null,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLogConsole() {
-    return Container(
-      height: 150,
-      width: double.infinity,
-      color: const Color(0xFF222222),
-      padding: const EdgeInsets.all(12),
-      child: SingleChildScrollView(
-        child: Text(_log, style: const TextStyle(color: Colors.greenAccent, fontFamily: "monospace", fontSize: 12)),
-      ),
-    );
-  }
-}
+            border: Border.all(color: path != null ? Colors.teal : Colors.grey.shade300, width: 2),
+            image: path != null ? DecorationImage(image: FileImage(File(path)), fit: BoxFit.cover) : nu

@@ -16,9 +16,6 @@ dependencies:
   file_picker: ^6.1.1
   # 权限管理
   permission_handler: ^11.3.0
-  # 相册保存 (这个插件本身支持 V2，非常稳)
-  gal: ^2.3.0
-  # 路径工具
   path_provider: ^2.1.2
   # ❌ 已删除 fluttertoast，因为它会导致构建报错
 
