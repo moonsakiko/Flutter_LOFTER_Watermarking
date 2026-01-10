@@ -3,8 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:fluttertoast/fluttertoast.dart';
-import 'package:gal/gal.dart'; // 新的保存插件
+import 'package:gal/gal.dart'; 
 import 'dart:io';
 
 void main() {
@@ -59,13 +58,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   // --- 权限与保存逻辑 ---
   Future<bool> _requestAccess() async {
-    // Gal 插件会自动处理权限，但为了保险我们手动检查一下相册权限
-    bool hasAccess = await Gal.hasAccess();
-    if (!hasAccess) {
-      await Gal.requestAccess();
-      return await Gal.hasAccess();
+    try {
+      bool hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        await Gal.requestAccess();
+        return await Gal.hasAccess();
+      }
+      return true;
+    } catch (e) {
+      _showToast("权限申请失败: $e");
+      return false;
     }
-    return true;
   }
 
   Future<void> _pickImage(bool isWm) async {
@@ -105,13 +108,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     List<String> wmFiles = files.where((f) => f.toLowerCase().contains("-wm.")).toList();
     
     for (var wm in wmFiles) {
-      // 规则匹配：把 -wm 替换为 -orig
       String expectedOrig = wm.replaceAll(RegExp(r'-wm\.', caseSensitive: false), '-orig.');
       String? foundOrig;
       try {
         foundOrig = files.firstWhere((f) => f == expectedOrig);
       } catch (e) {
-        // 尝试大小写容错
         try {
           foundOrig = files.firstWhere((f) => f.toLowerCase() == expectedOrig.toLowerCase());
         } catch (_) {}
@@ -141,13 +142,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     int successCount = 0;
 
     try {
-      // 循环一个个处理，避免内存爆炸
       for (var i = 0; i < tasks.length; i++) {
         var task = tasks[i];
-        String fileName = task['wm']!.split('/').last; // 获取文件名
+        String fileName = task['wm']!.split('/').last;
         
         try {
-          // 1. 调用 Kotlin，获取 Bytes（不存文件）
+          // 1. 调用 Kotlin，获取 Bytes
           final Uint8List? imageBytes = await platform.invokeMethod('processOneImage', {
             'wm': task['wm'],
             'clean': task['clean'],
@@ -182,8 +182,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     setState(() => _log = "$msg\n$_log");
   }
   
+  // 👇 替换了原来的 Fluttertoast，使用原生 SnackBar
   void _showToast(String msg) {
-    Fluttertoast.showToast(msg: msg, gravity: ToastGravity.BOTTOM);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.cyan[700],
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   // --- UI 构建部分 ---

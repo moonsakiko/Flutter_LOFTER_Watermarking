@@ -16,12 +16,11 @@ dependencies:
   file_picker: ^6.1.1
   # 权限管理
   permission_handler: ^11.3.0
-  # 📥 关键：最稳的保存相册插件
+  # 相册保存 (这个插件本身支持 V2，非常稳)
   gal: ^2.3.0
-  # 提示框
-  fluttertoast: ^8.2.4
   # 路径工具
   path_provider: ^2.1.2
+  # ❌ 已删除 fluttertoast，因为它会导致构建报错
 
 dev_dependencies:
   flutter_test:
@@ -32,7 +31,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/best_float16.tflite # 👈 别忘了放模型文件！
+    - assets/best_float16.tflite
     - assets/images/
 
 flutter_launcher_icons:
