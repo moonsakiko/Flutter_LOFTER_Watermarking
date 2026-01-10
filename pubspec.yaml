@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
   # UI 组件
   cupertino_icons: ^1.0.6
-  # google_fonts: ^6.1.0  <-- ❌ 删除了这一行，解决了冲突
+  # google_fonts 被移除以解决冲突，我们使用默认字体即可
   
   # 功能核心
   tflite_flutter: ^0.10.4
@@ -29,7 +29,7 @@ dev_dependencies:
   flutter_lints: ^3.0.0
   flutter_launcher_icons: ^0.13.1
 
-# 强制统一依赖版本 (兜底策略)
+# 强制解决传递依赖冲突
 dependency_overrides:
   http: ^0.13.6
 

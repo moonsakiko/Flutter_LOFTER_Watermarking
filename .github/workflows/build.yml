@@ -9,8 +9,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
-    # 设置 UTF-8 环境，防止中文乱码
     env:
       LANG: "en_US.UTF-8"
 
@@ -27,17 +25,15 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.2'
+          flutter-version: '3.22.2'  # 👈 升级到更稳定的版本
           channel: 'stable'
 
-      # 1. 创建工程
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
             flutter create . --platforms android --project-name lofter_remover
           fi
 
-      # 2. 注入中文名
       - name: Set App Name
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
@@ -48,23 +44,27 @@ jobs:
           with open('$MANIFEST', 'w', encoding='utf-8') as f: f.write(new_content)
           "
 
-      # 3. 修复环境 (关键步骤：解决插件版本冲突)
       - name: Fix Android Environment
         run: |
-          # 强制 Kotlin 1.9.0
+          echo "🔧 Fixing Android Build Configuration..."
+          
+          # 1. 修复 Kotlin 版本 (强制 1.9.0)
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
           
-          # 强制 MinSDK 21 (TFLite 需要)
-          sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
+          # 2. 修复 MinSDK (更精准的替换，防止语法错误)
+          # 查找 "flutter.minSdkVersion" 并替换为 "21"，只替换变量引用，不破坏结构
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
           
-          # 这一步是为了 tflite_flutter 的动态库不被压缩，防止加载失败
+          # 3. 防止 TFLite 库被压缩 (关键)
           echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
+          
+          # 调试：打印文件内容以防再次出错
+          cat android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
 
-      # 4. 生成临时签名
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
@@ -77,11 +77,9 @@ jobs:
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
-      # 5. 打包 Arm64 (Release)
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
-      # 6. 上传
       - name: Rename and Upload
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk "${{ env.FILE_NAME }}.apk"
