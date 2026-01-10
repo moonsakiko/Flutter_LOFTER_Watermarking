@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'single_mode.dart';
-import 'batch_mode.dart';
+import 'package:lofter_repair/screens/single_mode_screen.dart';
+import 'package:lofter_repair/screens/batch_mode_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -10,26 +10,27 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _currentIndex = 0;
-  final List<Widget> _pages = const [
-    SingleModeScreen(),
-    BatchModeScreen(),
+  int _selectedIndex = 0;
+
+  final List<Widget> _pages = [
+    const SingleModeScreen(),
+    const BatchModeScreen(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _pages[_currentIndex],
+      body: _pages[_selectedIndex],
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (idx) => setState(() => _selectedIndex = idx),
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.photo_filter),
-            label: '单图精修',
+            label: '单张精修',
           ),
           NavigationDestination(
-            icon: Icon(Icons.folder_copy),
+            icon: Icon(Icons.photo_library),
             label: '批量处理',
           ),
         ],

@@ -1,120 +1,103 @@
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 
 class YoloService {
   Interpreter? _interpreter;
-  final String modelPath = 'assets/models/best_float16.tflite';
   
-  // YOLOv8 默认输入尺寸
-  static const int INPUT_SIZE = 640; 
+  // 模型输入尺寸 (YOLOv8 默认通常是 640，如果是其他的请修改这里)
+  static const int INPUT_SIZE = 640;
 
-  Future<void> initModel() async {
-    if (_interpreter != null) return;
-    
+  Future<void> loadModel() async {
     try {
-      // 1. 配置解释器选项：强制 CPU，不使用 GPU/NNAPI
       final options = InterpreterOptions();
-      options.threads = 4; // 使用4个CPU线程
-      options.useNnApiForAndroid = false; // ❌ 严禁使用 NNAPI (防崩溃核心)
-      // options.addDelegate(GpuDelegateV2()); // ❌ 严禁添加 GPU 代理
-
-      // 2. 加载模型
-      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
-      print("✅ TFLite (CPU模式) 初始化成功");
-      
-      // 打印输入输出形状，用于调试
-      var inputShape = _interpreter!.getInputTensor(0).shape;
-      var outputShape = _interpreter!.getOutputTensor(0).shape;
-      print("Input Shape: $inputShape"); // 应该是 [1, 640, 640, 3]
-      print("Output Shape: $outputShape"); // 应该是 [1, 5, 8400]
-      
+      // 在 Android 上尝试使用 GPU 加速 (可选)
+      // options.addDelegate(GpuDelegateV2()); 
+      _interpreter = await Interpreter.fromAsset('assets/models/best_float16.tflite', options: options);
+      print('✅ 模型加载成功');
     } catch (e) {
-      print("❌ 模型加载失败: $e");
-      throw "模型加载失败，请检查文件是否被压缩";
+      print('❌ 模型加载失败: $e');
     }
   }
 
-  /// [confidenceThreshold] 由 UI 传入
-  Future<List<double>?> detectWatermark(String imagePath, double confidenceThreshold) async {
-    if (_interpreter == null) await initModel();
+  /// 预测水印位置
+  /// 返回: [x, y, w, h] (绝对坐标)
+  Future<List<int>?> detectWatermark(img.Image image, double confThreshold) async {
+    if (_interpreter == null) return null;
 
-    final imageFile = File(imagePath);
-    if (!imageFile.existsSync()) throw "图片文件丢失";
-    
-    // 1. 读取并预处理图片
-    img.Image? originalImage = img.decodeImage(await imageFile.readAsBytes());
-    if (originalImage == null) throw "无法解码图片";
+    // 1. 预处理图片 (Resize & Normalize)
+    final inputTensor = _preprocess(image);
 
-    // Resize 到 640x640
-    img.Image resizedImage = img.copyResize(originalImage, width: INPUT_SIZE, height: INPUT_SIZE);
+    // 2. 推理
+    // YOLOv8 输出通常是 [1, 4+nc, 8400] -> [1, 5, 8400] (假设只有1个类别)
+    // 我们需要查询 Output Shape
+    final outputShape = _interpreter!.getOutputTensor(0).shape; // e.g., [1, 5, 8400]
+    final outputBuffer = List.generate(
+      outputShape[0] * outputShape[1] * outputShape[2], 
+      (index) => 0.0
+    ).reshape(outputShape);
 
-    // 2. 转换为 Float32 输入数据 [1, 640, 640, 3] 并归一化 (0~1)
-    // 注意：TFLite Flutter 需要扁平化的 Float32List 或者多维数组
-    // 这里构建输入 tensor
-    var input = List.generate(1, (i) => List.generate(INPUT_SIZE, (y) => List.generate(INPUT_SIZE, (x) {
-      var pixel = resizedImage.getPixel(x, y);
+    _interpreter!.run(inputTensor, outputBuffer);
+
+    // 3. 后处理 (解析输出 + NMS)
+    return _postprocess(outputBuffer[0], image.width, image.height, confThreshold);
+  }
+
+  List<List<List<double>>> _preprocess(img.Image image) {
+    // 缩放并转为 Float32 [1, 640, 640, 3]
+    final resized = img.copyResize(image, width: INPUT_SIZE, height: INPUT_SIZE);
+    final input = List.generate(1, (i) => List.generate(INPUT_SIZE, (y) => List.generate(INPUT_SIZE, (x) {
+      final pixel = resized.getPixel(x, y);
+      // 归一化 0-255 -> 0.0-1.0
       return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
     })));
+    return input;
+  }
 
-    // 3. 准备输出容器 [1, 5, 8400]
-    // 5 代表: [cx, cy, w, h, confidence]
-    // 8400 是锚点数量
-    var output = List.filled(1 * 5 * 8400, 0.0).reshape([1, 5, 8400]);
-
-    // 4. 运行推理
-    try {
-      _interpreter!.run(input, output);
-    } catch (e) {
-      throw "推理运行时崩溃: $e";
-    }
-
-    // 5. 后处理 (解析输出)
-    // output[0][0][...] 是 x 坐标的所有预测
-    // output[0][4][...] 是 置信度 的所有预测
-    List<List<double>> rawData = output[0]; // [5, 8400]
+  List<int>? _postprocess(List<dynamic> output, int imgW, int imgH, double confThreshold) {
+    // output shape: [5, 8400] (cx, cy, w, h, conf)
+    // 注意：有些模型导出时维度可能是转置的 [8400, 5]，这里假设是 [5, 8400]
     
-    double maxConf = 0.0;
-    int bestIndex = -1;
+    int numAnchors = output[0].length; // 8400
+    
+    List<List<double>> candidates = [];
 
-    // 遍历 8400 个锚点，找置信度最高的
-    for (int i = 0; i < 8400; i++) {
-      double conf = rawData[4][i];
-      if (conf > maxConf) {
-        maxConf = conf;
-        bestIndex = i;
+    for (int i = 0; i < numAnchors; i++) {
+      double conf = output[4][i]; // 置信度
+      if (conf > confThreshold) {
+        double cx = output[0][i];
+        double cy = output[1][i];
+        double w = output[2][i];
+        double h = output[3][i];
+        candidates.add([cx, cy, w, h, conf]);
       }
     }
 
-    print("🔍 最大置信度: $maxConf (阈值: $confidenceThreshold)");
+    if (candidates.isEmpty) return null;
 
-    if (bestIndex != -1 && maxConf >= confidenceThreshold) {
-      // 获取归一化的预测值 (基于 640x640)
-      double cx = rawData[0][bestIndex];
-      double cy = rawData[1][bestIndex];
-      double w = rawData[2][bestIndex];
-      double h = rawData[3][bestIndex];
+    // 简单的 NMS: 取置信度最高的一个 (因为我们假设通常只有1个水印，或者我们需要最明显的一个)
+    // 如果有多个水印，这里需要完整的 NMS 算法，但针对 LOFTER 场景通常取 Conf 最大的即可
+    candidates.sort((a, b) => b[4].compareTo(a[4]));
+    final best = candidates[0];
 
-      // 还原到原图尺寸
-      double scaleX = originalImage.width / INPUT_SIZE;
-      double scaleY = originalImage.height / INPUT_SIZE;
+    // 将相对坐标 (0-640) 映射回原图坐标
+    double scaleX = imgW / INPUT_SIZE;
+    double scaleY = imgH / INPUT_SIZE;
 
-      // 计算左上角坐标 (基于 640)
-      double x640 = cx - (w / 2);
-      double y640 = cy - (h / 2);
+    // x,y 是中心点，转为左上角
+    int x = ((best[0] - best[2] / 2) * scaleX).toInt();
+    int y = ((best[1] - best[3] / 2) * scaleY).toInt();
+    int w = (best[2] * scaleX).toInt();
+    int h = (best[3] * scaleY).toInt();
 
-      // 映射回原图
-      double x = x640 * scaleX;
-      double y = y640 * scaleY;
-      double finalW = w * scaleX;
-      double finalH = h * scaleY;
+    // 边界检查
+    x = max(0, x);
+    y = max(0, y);
+    w = min(imgW - x, w);
+    h = min(imgH - y, h);
 
-      return [x, y, finalW, finalH];
-    }
-
-    return null;
+    return [x, y, w, h];
   }
 }

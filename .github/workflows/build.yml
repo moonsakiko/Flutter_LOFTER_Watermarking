@@ -1,16 +1,13 @@
-name: Build Android App
+name: Lofter Repair App Build
 on:
   workflow_dispatch:
 
 env:
-  FILE_NAME: "Lofter_Watermark_Remover"
-  APP_LABEL: "LOFTER去水印神器"
+  APP_NAME: "LOFTER修复助手"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      LANG: "en_US.UTF-8"
 
     steps:
       - name: Checkout Code
@@ -25,93 +22,66 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.1'
+          flutter-version: '3.19.0'
           channel: 'stable'
 
+      # 1. 生成 Android 工程
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
-            flutter create . --platforms android --project-name lofter_fixer
+            flutter create . --platforms android --project-name lofter_repair_app
           fi
 
-      # 1. 强力修复 build.gradle (AI 核心配置)
-      - name: Nuclear Fix for Android Build
+      # 2. 核心：修改中文名
+      - name: Set Chinese App Name
         run: |
-          python3 -c "
-          import os
+          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
 
-          gradle_path = 'android/app/build.gradle'
-          with open(gradle_path, 'r') as f:
-              content = f.read()
-
-          # 策略A：尝试关闭混淆
-          content = content.replace('minifyEnabled true', 'minifyEnabled false')
-          content = content.replace('shrinkResources true', 'shrinkResources false')
-
-          # 策略B：注入 noCompress (AI 模型必须)
-          # 插在 android { 紧后面
-          if 'aaptOptions' not in content:
-              content = content.replace('android {', 'android {\n    aaptOptions {\n        noCompress \"tflite\"\n    }\n')
-
-          with open(gradle_path, 'w') as f:
-              f.write(content)
-          print('✅ build.gradle 修复完成')
-          "
-
-          # 2. 修复 Kotlin 版本
+      # 3. 核心：修复环境 (Kotlin + MinSDK)
+      - name: Fix Android Environment
+        run: |
+          # 强制升级 Kotlin 到 1.9.0 以兼容新插件
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          
-          # 3. 修复 MinSDK
-          sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
-          
-          # 4. 修改 APP 中文名
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          python3 -c "
-          import re
-          with open('$MANIFEST', 'r', encoding='utf-8') as f:
-              content = f.read()
-          new_content = re.sub(r'android:label=\"[^\"]*\"', 'android:label=\"${{ env.APP_LABEL }}\"', content)
-          with open('$MANIFEST', 'w', encoding='utf-8') as f:
-              f.write(new_content)
-          "
+          # 强制 MinSDK 为 21
+          sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
 
-      # 👇👇👇 【复活】ProGuard 规则 (防止 R8 报错) 👇👇👇
-      # 就算上面的关闭混淆失败了，有了这个白名单，R8 也能跑通过！
-      - name: Configure ProGuard Rules
+      # 4. 核心：添加读取权限 (如果 Manifest 没写的话，这里通过脚本补刀，双保险)
+      - name: Inject Permissions
         run: |
-          echo "-dontwarn java.beans.**" > android/app/proguard-rules.pro
-          echo "-dontwarn java.awt.**" >> android/app/proguard-rules.pro
-          echo "-dontwarn org.yaml.snakeyaml.**" >> android/app/proguard-rules.pro
-          echo "-keep class org.yaml.snakeyaml.** { *; }" >> android/app/proguard-rules.pro
-          echo "-keep class com.ultralytics.** { *; }" >> android/app/proguard-rules.pro
-          echo "-keep class org.tensorflow.** { *; }" >> android/app/proguard-rules.pro
+          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
+          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
 
+      # 5. 生成图标 (可选，如果你上传了 icon.png)
+      - name: Generate Assets
+        run: dart run flutter_launcher_icons || true
+
+      # 6. 生成签名
       - name: Generate Keystore
         run: |
           keytool -genkey -v -keystore upload-keystore.jks \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -alias upload -dname "CN=Android, OU=Android, O=Android, L=Android, S=Android, C=US" \
+            -alias upload -dname "CN=Me, OU=Me, O=Me, L=Me, S=Me, C=CN" \
             -storepass android -keypass android
-          
           echo "storePassword=android" > android/key.properties
           echo "keyPassword=android" >> android/key.properties
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
+      # 7. 打包 (Release + Arm64)
       - name: Build APK
-        # 移除 no-tree-shake-icons，因为上面已经配置了规则
         run: flutter build apk --release --target-platform android-arm64
 
+      # 8. 重命名并上传
       - name: Rename and Upload
         run: |
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.FILE_NAME }}.apk"
-
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+      
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FILE_NAME }}_Install_Package
-          path: "build/app/outputs/flutter-apk/${{ env.FILE_NAME }}.apk"
+          name: ${{ env.APP_NAME }}_Install_Package
+          path: "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
