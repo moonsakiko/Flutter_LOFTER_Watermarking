@@ -44,26 +44,59 @@ jobs:
           with open('$MANIFEST', 'w', encoding='utf-8') as f: f.write(new_content)
           "
 
-      - name: Fix Android Environment (The Clean Way)
+      - name: Fix Android Environment (Line-by-Line Rewrite)
         run: |
-          echo "🔧 Configuring Android Environment..."
-
-          # 1. 【核心修复】通过 local.properties 覆盖 MinSDK
-          # 这是官方推荐的方式，不用去改 build.gradle 代码，绝对安全！
-          echo "flutter.minSdkVersion=26" >> android/local.properties
+          echo "🔧 Fixing Android Build Configuration..."
           
-          # 2. 【TFLite修复】追加 noCompress 配置到 build.gradle 末尾
-          # Gradle 允许追加多个 android {} 块，它们会自动合并，这样非常安全。
-          echo "" >> android/app/build.gradle
-          echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
-          
-          # 3. 【Kotlin修复】解决插件冲突
+          # 1. 修复 Kotlin 版本 (settings.gradle & build.gradle)
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
+          
+          # 2. 【核心】使用 Python 逐行扫描并重写 android/app/build.gradle
+          python3 -c "
+          import os
+          
+          file_path = 'android/app/build.gradle'
+          print(f'Processing {file_path}...')
+          
+          if os.path.exists(file_path):
+              with open(file_path, 'r', encoding='utf-8') as f:
+                  lines = f.readlines()
+              
+              new_lines = []
+              found_sdk = False
+              
+              for line in lines:
+                  # 去除首尾空白，检查是否以 minSdkVersion 开头
+                  if line.strip().startswith('minSdkVersion'):
+                      print(f'  🎯 Found target line: {line.strip()}')
+                      # 计算原有的缩进 (空格)
+                      indent = line[:line.find('minSdkVersion')]
+                      # 替换为 26
+                      new_lines.append(f'{indent}minSdkVersion 26\n')
+                      print(f'  ✅ Replaced with: {indent}minSdkVersion 26')
+                      found_sdk = True
+                  else:
+                      new_lines.append(line)
+              
+              # 追加 tflite 防压缩配置
+              new_lines.append('\nandroid { aaptOptions { noCompress \"tflite\" } }\n')
+              
+              with open(file_path, 'w', encoding='utf-8') as f:
+                  f.writelines(new_lines)
+                  
+              if not found_sdk:
+                  print('❌ WARNING: Could not find minSdkVersion line to replace!')
+              else:
+                  print('✅ Successfully updated minSdkVersion.')
 
-          # 4. 打印 local.properties 确认修改
-          echo "--- android/local.properties Content ---"
-          cat android/local.properties
+              # 【关键】打印文件内容以供验证
+              print('\n--- [DEBUG] Content of android/app/build.gradle ---')
+              print(''.join(new_lines))
+              print('--- [DEBUG] End of File ---')
+          else:
+              print(f'❌ Error: File {file_path} not found.')
+          "
 
       - name: Install Dependencies
         run: flutter pub get
