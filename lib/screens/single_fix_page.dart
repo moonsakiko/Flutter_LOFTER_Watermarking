@@ -20,22 +20,23 @@ class _SingleFixPageState extends State<SingleFixPage> {
   File? resultFile;
   bool isProcessing = false;
   
+  // ⭐ 新增：置信度 (默认 0.25)
+  double confidence = 0.25;
+  
   final YoloService _yoloService = YoloService();
   final ImageProcessor _imageProcessor = ImageProcessor();
 
   @override
   void initState() {
     super.initState();
-    // ✅ 进页面时清理一次旧垃圾
     Cleaner.nukeCache();
-    // 预加载模型
     _yoloService.initModel();
   }
 
   Future<void> _pickImage(bool isWm) async {
-    // ❌ 删掉这行！不要在这里清理，否则选第二张图时会把第一张删掉！
-    // await Cleaner.nukeCache(); 
-    
+    // 选图前清理旧垃圾
+    await Cleaner.nukeCache();
+
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
     if (result != null) {
       setState(() {
@@ -44,7 +45,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
         } else {
           origFile = File(result.files.single.path!);
         }
-        // 如果重新选了图，就把上次的结果清空
         resultFile = null;
       });
     }
@@ -55,19 +55,21 @@ class _SingleFixPageState extends State<SingleFixPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择两张图片")));
       return;
     }
-
-    // 再次检查文件是否存在 (防止意外被删)
+    
+    // 再次检查 (防止被清理删掉)
     if (!wmFile!.existsSync() || !origFile!.existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("图片文件丢失，请重新选择")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("文件丢失，请重新选择")));
       return;
     }
 
     setState(() => isProcessing = true);
 
     try {
-      final box = await _yoloService.detectWatermark(wmFile!.path);
+      // ⭐ 传入当前的置信度
+      final box = await _yoloService.detectWatermark(wmFile!.path, confidence);
+      
       if (box == null) {
-        throw Exception("AI 未能检测到水印，请尝试更清晰的图片");
+        throw Exception("未检测到水印 (当前灵敏度: ${confidence.toStringAsFixed(2)})");
       }
 
       final fixedFile = await _imageProcessor.repairImage(wmFile!.path, origFile!.path, box);
@@ -85,14 +87,9 @@ class _SingleFixPageState extends State<SingleFixPage> {
         ),
       );
     } finally {
-      // ✅ 任务结束后（无论成功失败），统一清理垃圾
-      // 这次为了防止把生成的 resultFile 也删了，我们延时一点点或仅清理 picker 缓存
-      // 为了稳妥，我们放在这里清理，因为 resultFile 是存放在 app document 里的，不会被 nukeCache (只删 temp) 误删
+      // 任务结束清理垃圾
       await Cleaner.nukeCache();
-      
-      if (mounted) {
-        setState(() => isProcessing = false);
-      }
+      if (mounted) setState(() => isProcessing = false);
     }
   }
 
@@ -115,15 +112,53 @@ class _SingleFixPageState extends State<SingleFixPage> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Expanded(child: _buildSelector(wmFile, "选择水印图", true)),
                 const SizedBox(width: 10),
-                Expanded(child: _buildSelector(origFile, "选择原图", false)),
+                // ⭐ 修改文字
+                Expanded(child: _buildSelector(origFile, "选择无水印图", false)),
               ],
             ),
             
+            const SizedBox(height: 20),
+            
+            // ⭐ 新增：灵敏度滑块
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("AI 识别灵敏度", style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text(confidence.toStringAsFixed(2), style: const TextStyle(color: Colors.blue)),
+                    ],
+                  ),
+                  Slider(
+                    value: confidence,
+                    min: 0.05,
+                    max: 0.95,
+                    divisions: 18,
+                    label: confidence.toStringAsFixed(2),
+                    onChanged: (val) => setState(() => confidence = val),
+                  ),
+                  const Text(
+                    "提示：如果提示找不到水印，请调低数值；如果修错了位置，请调高数值。",
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+
             const SizedBox(height: 20),
             
             FilledButton.icon(
