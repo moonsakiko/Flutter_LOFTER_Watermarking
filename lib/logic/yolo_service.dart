@@ -2,16 +2,22 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
-import 'package:image/image.dart' as img;
+import 'package:image/image.dart' as img; // 纯Dart图像库
 import 'package:tflite_flutter/tflite_flutter.dart';
+import 'nms_utils.dart';
 
 class YoloService {
   Interpreter? _interpreter;
-  static const int INPUT_SIZE = 640; // YOLOv8 默认尺寸
+  static const int inputSize = 640; // YOLO通常是640x640
 
+  // 配置参数
+  double confidenceThreshold = 0.5;
+  double expansionRatioW = 0.2; // 宽度外扩 20%
+  double expansionRatioH = 0.1; // 高度外扩 10%
+
+  /// 加载模型
   Future<void> loadModel() async {
     try {
-      // 加载 assets 中的模型
       _interpreter = await Interpreter.fromAsset('assets/models/best_float16.tflite');
       print("✅ 模型加载成功");
     } catch (e) {
@@ -19,100 +25,112 @@ class YoloService {
     }
   }
 
-  /// 核心推理函数
-  /// 返回格式: List of [x, y, w, h] (绝对坐标)
-  Future<List<List<int>>> detect(File imageFile, double confThreshold) async {
-    if (_interpreter == null) return [];
+  /// 核心修复函数
+  Future<Uint8List?> repairImage(String wmPath, String noWmPath) async {
+    if (_interpreter == null) await loadModel();
 
-    // 1. 读取并预处理图片
-    final rawImage = await imageFile.readAsBytes();
-    final decodedImage = img.decodeImage(rawImage);
-    if (decodedImage == null) return [];
-
-    final originalW = decodedImage.width;
-    final originalH = decodedImage.height;
-
-    // 2. 缩放到 640x640 并归一化 (0~255 -> 0.0~1.0)
-    final resized = img.copyResize(decodedImage, width: INPUT_SIZE, height: INPUT_SIZE);
+    // 1. 读取图片
+    final wmBytes = await File(wmPath).readAsBytes();
+    final noWmBytes = await File(noWmPath).readAsBytes();
     
-    // 构建输入 Tensor [1, 640, 640, 3]
-    var input = List.generate(
-      1, 
-      (i) => List.generate(
-        INPUT_SIZE, 
-        (y) => List.generate(
-          INPUT_SIZE, 
-          (x) {
-            final pixel = resized.getPixel(x, y);
-            return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
-          }
-        )
-      )
-    );
+    img.Image? wmImage = img.decodeImage(wmBytes);
+    img.Image? noWmImage = img.decodeImage(noWmBytes);
 
-    // 3. 运行推理
-    // YOLOv8 输出通常是 [1, 5, 8400] (xywh + conf) 或者是 [1, 8400, 5] 取决于导出方式
-    // 这里假设输出需要转置处理
-    var outputShape = _interpreter!.getOutputTensor(0).shape; 
-    // 创建输出 buffer
-    var output = List.filled(outputShape.reduce((a, b) => a * b), 0.0).reshape(outputShape);
+    if (wmImage == null || noWmImage == null) return null;
 
-    _interpreter!.run(input, output);
-
-    // 4. 后处理 (解析坐标 + NMS)
-    return _parseOutput(output, confThreshold, originalW, originalH);
-  }
-
-  List<List<int>> _parseOutput(List<dynamic> output, double threshold, int imgW, int imgH) {
-    // YOLOv8 TFLite 输出通常是 [1, 5, 8400] -> 需要转置读取
-    // 0: x_center, 1: y_center, 2: width, 3: height, 4: confidence
-    
-    // 注意：不同导出方式维度可能不同，这里按标准 [1, 5, 8400] 处理
-    List<List<double>> boxes = [];
-    
-    // 假设 output[0] 是数据，维度 5 是特征，维度 8400 是锚点
-    // 我们需要遍历 8400 个锚点
-    int features = output[0].length; // 5 或 84+
-    int anchors = output[0][0].length; // 8400
-
-    for (int i = 0; i < anchors; i++) {
-      double conf = output[0][4][i]; // 置信度
-      
-      if (conf > threshold) {
-        double xCenter = output[0][0][i];
-        double yCenter = output[0][1][i];
-        double width = output[0][2][i];
-        double height = output[0][3][i];
-
-        // 转回 640 坐标系左上角
-        double x = (xCenter - width / 2);
-        double y = (yCenter - height / 2);
-
-        boxes.add([x, y, width, height, conf]);
-      }
+    // 2. 关键步骤：将无水印图 Resize 到和 有水印图 一样大 (Python逻辑复刻)
+    if (noWmImage.width != wmImage.width || noWmImage.height != wmImage.height) {
+      noWmImage = img.copyResize(noWmImage, width: wmImage.width, height: wmImage.height, interpolation: img.Interpolation.cubic);
     }
 
-    // NMS (非极大值抑制) - 简单版：取置信度最高的几个
-    boxes.sort((a, b) => b[4].compareTo(a[4]));
-    if (boxes.isEmpty) return [];
+    // 3. 预处理 (Resize + Normalize)
+    // YOLO 需要 640x640，且归一化到 0~1
+    img.Image resizedForModel = img.copyResize(wmImage, width: inputSize, height: inputSize);
+    var inputTensor = _imageToFloat32List(resizedForModel);
 
-    // 这里简化处理：直接返回置信度最高的那个框（通常去水印只需要一个框）
-    // 如果需要多个水印，需要实现完整的 IoU 过滤
-    var bestBox = boxes.first;
+    // 4. 推理
+    // Output shape: [1, 4 + classes, 8400] -> [1, 5, 8400] (假设1个类别)
+    var outputTensor = List.filled(1 * 5 * 8400, 0.0).reshape([1, 5, 8400]);
+    _interpreter!.run(inputTensor.reshape([1, inputSize, inputSize, 3]), outputTensor);
 
-    // 5. 坐标映射回原图尺寸
-    double scaleX = imgW / INPUT_SIZE;
-    double scaleY = imgH / INPUT_SIZE;
-
-    int finalX = (bestBox[0] * scaleX).toInt();
-    int finalY = (bestBox[1] * scaleY).toInt();
-    int finalW = (bestBox[2] * scaleX).toInt();
-    int finalH = (bestBox[3] * scaleY).toInt();
-
-    // 确保不越界
-    finalX = max(0, finalX);
-    finalY = max(0, finalY);
+    // 5. 解析输出并 NMS
+    List<Detection> detections = _processOutput(outputTensor[0], wmImage.width, wmImage.height);
     
-    return [[finalX, finalY, finalW, finalH]];
+    if (detections.isEmpty) {
+      print("⚠️ 未检测到水印");
+      return null; // 没检测到，返回空或原图
+    }
+
+    // 6. 修复 (Patching)
+    for (var det in detections) {
+      // 计算修复区域 (包含外扩)
+      int x = det.box.left.toInt();
+      int y = det.box.top.toInt();
+      int w = det.box.width.toInt();
+      int h = det.box.height.toInt();
+
+      // 应用外扩
+      int wMargin = (w * expansionRatioW / 2).round();
+      int hMargin = (h * expansionRatioH / 2).round();
+      
+      int xStart = max(0, x - wMargin);
+      int yStart = max(0, y - hMargin);
+      int xEnd = min(wmImage.width, x + w + wMargin);
+      int yEnd = min(wmImage.height, y + h + hMargin);
+      
+      int patchW = xEnd - xStart;
+      int patchH = yEnd - yStart;
+
+      // 从无水印图中“抠”一块肉
+      img.Image patch = img.copyCrop(noWmImage, x: xStart, y: yStart, width: patchW, height: patchH);
+      
+      // “贴”到有水印图上
+      img.compositeImage(wmImage, patch, dstX: xStart, dstY: yStart);
+    }
+
+    // 7. 返回结果
+    return Uint8List.fromList(img.encodeJpg(wmImage, quality: 100));
+  }
+
+  /// 辅助：图片转 Float32List (0-255 -> 0.0-1.0)
+  Float32List _imageToFloat32List(img.Image image) {
+    var convertedBytes = Float32List(1 * inputSize * inputSize * 3);
+    var buffer = Float32List.view(convertedBytes.buffer);
+    int pixelIndex = 0;
+    for (var i = 0; i < inputSize; ++i) {
+      for (var j = 0; j < inputSize; ++j) {
+        var pixel = image.getPixel(j, i);
+        buffer[pixelIndex++] = pixel.r / 255.0;
+        buffer[pixelIndex++] = pixel.g / 255.0;
+        buffer[pixelIndex++] = pixel.b / 255.0;
+      }
+    }
+    return convertedBytes;
+  }
+
+  /// 辅助：解析模型输出
+  List<Detection> _processOutput(List<dynamic> rawOutput, int imgW, int imgH) {
+    List<Detection> results = [];
+    // rawOutput: [5, 8400] -> 5 rows (xc, yc, w, h, score), 8400 cols
+    // 需要转置或者直接按索引读取
+    
+    for (int i = 0; i < 8400; i++) {
+      double score = rawOutput[4][i]; // 假设第4行是置信度
+      if (score > confidenceThreshold) {
+        double xCenter = rawOutput[0][i];
+        double yCenter = rawOutput[1][i];
+        double width = rawOutput[2][i];
+        double height = rawOutput[3][i];
+
+        // 反归一化坐标 -> 实际像素
+        double x = (xCenter - width / 2) / inputSize * imgW;
+        double y = (yCenter - height / 2) / inputSize * imgH;
+        double w = width / inputSize * imgW;
+        double h = height / inputSize * imgH;
+
+        results.add(Detection(Rect.fromLTWH(x, y, w, h), score, 0));
+      }
+    }
+    return nonMaxSuppression(results, 0.45); // IoU 阈值
   }
 }

@@ -1,5 +1,5 @@
-name: lofter_remover
-description: LOFTER Watermark Remover App
+name: lofter_fixer
+description: A Flutter app to remove watermarks using YOLO.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,39 +9,24 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # UI 组件
-  cupertino_icons: ^1.0.6
-  # google_fonts 被移除以解决冲突，我们使用默认字体即可
-  
-  # 功能核心
-  tflite_flutter: ^0.10.4
-  image: ^4.1.7
-  image_picker: ^1.0.7
-  file_picker: ^6.1.1
-  path_provider: ^2.1.2
-  permission_handler: ^11.3.0
-  gallery_saver: ^2.3.2
-  shared_preferences: ^2.2.2
+  # 核心依赖
+  tflite_flutter: ^0.10.4  # TensorFlow Lite 推理
+  image: ^4.1.3            # 纯Dart图像处理 (比OpenCV更轻量)
+  image_picker: ^1.0.7     # 选择图片
+  file_picker: ^6.1.1      # 选择文件/保存路径
+  path_provider: ^2.1.2    # 获取路径
+  shared_preferences: ^2.2.2 # 保存设置
+  permission_handler: ^11.3.0 # 权限管理
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
-  flutter_launcher_icons: ^0.13.1
-
-# 强制解决传递依赖冲突
-dependency_overrides:
-  http: ^0.13.6
 
 flutter:
   uses-material-design: true
   
+  # 注册资源
   assets:
-    - assets/images/
     - assets/models/
-
-flutter_launcher_icons:
-  android: "launcher_icon"
-  ios: false
-  image_path: "assets/images/icon.png"
-  min_sdk_android: 21
+    - assets/images/
