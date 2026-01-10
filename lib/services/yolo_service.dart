@@ -19,14 +19,15 @@ class YoloService {
     }
 
     try {
+      // 👇 0.1.19 版本没有 useGpu 参数，删掉它即可
+      // 依赖 build.yml 中的 noCompress 配置来防止崩溃
       _yolo = YOLO(
         modelPath: modelPath,
         task: YOLOTask.detect,
-        // 👇 强制 CPU 运行，防止 Platform Error 崩溃
-        useGpu: false, 
       );
+      
       await _yolo!.loadModel();
-      print("✅ YOLO (CPU模式) 初始化成功");
+      print("✅ YOLO 引擎初始化成功");
     } catch (e) {
       throw "引擎初始化失败: $e";
     }
@@ -42,7 +43,7 @@ class YoloService {
     try {
       final imageBytes = await imageFile.readAsBytes();
 
-      // 👇 置信度 0.15
+      // 置信度 0.15
       final result = await _yolo!.predict(
         imageBytes,
         confidenceThreshold: 0.15, 
@@ -57,7 +58,7 @@ class YoloService {
       
       if (bestDetection is Map) {
         if (bestDetection.containsKey('x') && bestDetection.containsKey('width')) {
-           // 👇👇👇 修正点：加上 double 声明 👇👇👇
+           // 必须加 double 转换
            double cx = (bestDetection['x'] as num).toDouble();
            double cy = (bestDetection['y'] as num).toDouble();
            double w = (bestDetection['width'] as num).toDouble();
