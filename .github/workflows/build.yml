@@ -25,7 +25,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.2'  # 👈 升级到更稳定的版本
+          flutter-version: '3.22.2'
           channel: 'stable'
 
       - name: Create Android Project
@@ -52,14 +52,15 @@ jobs:
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
           
-          # 2. 修复 MinSDK (更精准的替换，防止语法错误)
-          # 查找 "flutter.minSdkVersion" 并替换为 "21"，只替换变量引用，不破坏结构
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
+          # 2. 修复 MinSDK (改为 26 以适配 TFLite)
+          # 使用最通用的正则替换，确保替换成功
+          sed -i 's/minSdkVersion.*/minSdkVersion 26/g' android/app/build.gradle
           
           # 3. 防止 TFLite 库被压缩 (关键)
           echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
           
-          # 调试：打印文件内容以防再次出错
+          # 4. 打印修改后的文件以供检查
+          echo "--- android/app/build.gradle ---"
           cat android/app/build.gradle
 
       - name: Install Dependencies
