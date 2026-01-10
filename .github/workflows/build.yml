@@ -1,4 +1,4 @@
-name: Flutter 3.24 Compatibility Build
+name: Flutter 3.22 Goldilocks Build
 on:
   workflow_dispatch:
 
@@ -19,70 +19,50 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
+          # Flutter 3.22 + Gradle 8 需要 Java 17
           java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.3'
+          # 👇👇👇 核心：使用黄金版本 3.22.2 👇👇👇
+          # 它既支持 Gradle 8 (适配新插件)，又保留了旧变量 (适配 gal)
+          flutter-version: '3.22.2'
           channel: 'stable'
 
       # =========================================================
-      # 1. 生成骨架
+      # 1. 生成骨架 (原汤化原食)
       # =========================================================
       - name: Generate Scaffolding
         run: |
           rm -rf android
+          # 3.22.2 生成的骨架默认就是 AGP 8.1 + Kotlin 1.9
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
           echo "✅ 骨架已生成"
 
       # =========================================================
-      # 2. 【核心修复】为老插件手动铺路
+      # 2. 注入依赖 (仅修改 app/build.gradle)
       # =========================================================
-      - name: Fix Plugin Compatibility (Inject Global Variables)
-        run: |
-          ROOT_BUILD_GRADLE="android/build.gradle"
-          
-          # 1. 生成 local.properties (防止插件因为找不到 SDK 路径而崩溃)
-          # $FLUTTER_ROOT 是 setup-flutter 动作自动提供的环境变量
-          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
-          echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
-          echo "✅ local.properties 已手动生成"
-
-          # 2. 注入全局版本号变量
-          # 很多插件(如 gal)会去根目录找 ext.compileSdkVersion，找不到就报错。
-          # 我们把这些变量强行写在 buildscript 块的后面。
-          
-          # 这里的 sed 命令意思是在 'allprojects {' 这一行之前，插入 ext 代码块
-          sed -i '/allprojects {/i \
-          ext {\
-              buildToolsVersion = "34.0.0"\
-              compileSdkVersion = 34\
-              minSdkVersion = 24\
-              targetSdkVersion = 34\
-              ndkVersion = "25.1.8937393"\
-          }' $ROOT_BUILD_GRADLE
-          
-          echo "✅ 根 build.gradle 已注入兼容性变量"
-          cat $ROOT_BUILD_GRADLE
-
-      # =========================================================
-      # 3. 注入原生依赖 (TFLite & OpenCV)
-      # =========================================================
-      - name: Inject Native Dependencies
+      - name: Inject Dependencies
         run: |
           APP_BUILD_GRADLE="android/app/build.gradle"
           
-          # 1. 注入依赖库
+          # 1. 注入 TFLite 和 OpenCV 依赖
+          # 使用 sed 在 dependencies { 后面追加内容
           sed -i '/dependencies {/a \    implementation "org.tensorflow:tensorflow-lite:2.14.0"\n    implementation "org.tensorflow:tensorflow-lite-support:0.4.4"\n    implementation "com.quickbirdstudios:opencv:4.5.3.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"' $APP_BUILD_GRADLE
           
           # 2. 注入 packagingOptions (解决 .so 冲突)
+          # 在 android { 块内部追加
           sed -i '/android {/a \    packagingOptions {\n        pickFirst "lib/arm64-v8a/libc++_shared.so"\n        pickFirst "lib/armeabi-v7a/libc++_shared.so"\n    }' $APP_BUILD_GRADLE
           
-          echo "✅ APP 依赖注入完成"
+          # 3. 修正 MinSDK (TFLite 需要 24)
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $APP_BUILD_GRADLE
+          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $APP_BUILD_GRADLE
+          
+          echo "✅ 依赖库注入完成"
 
       # =========================================================
-      # 4. 注入业务代码
+      # 3. 注入业务代码 (灵魂覆盖)
       # =========================================================
       - name: Inject Source Code
         run: |
@@ -93,10 +73,10 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
           
-          echo "✅ 业务代码注入完成"
+          echo "✅ 业务代码注入完毕"
 
       # =========================================================
-      # 5. 打包流程
+      # 4. 常规打包流程
       # =========================================================
       - name: Generate Icon
         run: |
