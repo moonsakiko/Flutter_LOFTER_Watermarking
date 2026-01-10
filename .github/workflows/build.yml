@@ -1,9 +1,10 @@
-name: Lofter Repair App Build
+name: Flutter Build LOFTER Remover
 on:
   workflow_dispatch:
 
 env:
-  APP_NAME: "LOFTER修复助手"
+  APP_NAME: "LOFTER去水印"
+  # 请确保你的 assets/models/best_float16.tflite 已经上传到仓库！
 
 jobs:
   build:
@@ -25,63 +26,38 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      # 1. 生成 Android 工程
       - name: Create Android Project
         run: |
           if [ ! -d "android" ]; then
-            flutter create . --platforms android --project-name lofter_repair_app
+            # 使用蛇形命名法
+            flutter create . --platforms android --project-name lofter_remover
           fi
 
-      # 2. 核心：修改中文名
-      - name: Set Chinese App Name
-        run: |
-          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
-
-      # 3. 核心：修复环境 (Kotlin + MinSDK)
+      # 🔧 修复环境 (关键步骤，解决新插件冲突)
       - name: Fix Android Environment
         run: |
-          # 强制升级 Kotlin 到 1.9.0 以兼容新插件
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          # 强制 MinSDK 为 21
           sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle
+          
+          # 这一步是为了防止 TFLite 插件编译时的压缩问题
+          echo "android.enableR8=true" >> android/gradle.properties
 
-      # 4. 核心：添加读取权限 (如果 Manifest 没写的话，这里通过脚本补刀，双保险)
-      - name: Inject Permissions
+      # 🏷️ 修改中文名
+      - name: Change App Name
         run: |
-          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
-          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
 
-      # 5. 生成图标 (可选，如果你上传了 icon.png)
-      - name: Generate Assets
-        run: dart run flutter_launcher_icons || true
+      # 这里演示打 Debug 包 (免签名，适合快速测试)
+      # 如果你需要正式签名，请参考上一篇教程恢复 Keystore 部分
+      - name: Build APK (Debug)
+        run: flutter build apk --debug --target-platform android-arm64
 
-      # 6. 生成签名
-      - name: Generate Keystore
-        run: |
-          keytool -genkey -v -keystore upload-keystore.jks \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -alias upload -dname "CN=Me, OU=Me, O=Me, L=Me, S=Me, C=CN" \
-            -storepass android -keypass android
-          echo "storePassword=android" > android/key.properties
-          echo "keyPassword=android" >> android/key.properties
-          echo "keyAlias=upload" >> android/key.properties
-          echo "storeFile=../../upload-keystore.jks" >> android/key.properties
-
-      # 7. 打包 (Release + Arm64)
-      - name: Build APK
-        run: flutter build apk --release --target-platform android-arm64
-
-      # 8. 重命名并上传
-      - name: Rename and Upload
-        run: |
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
-      
-      - name: Upload Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}_Install_Package
-          path: "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+          name: lofter-remover-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk

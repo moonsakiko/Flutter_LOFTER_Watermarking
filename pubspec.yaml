@@ -1,5 +1,5 @@
-name: lofter_repair
-description: LOFTER Image Watermark Remover App.
+name: lofter_repair_tool
+description: A tool to remove watermarks using YOLO.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,51 +9,27 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # UI 图标
-  cupertino_icons: ^1.0.2
-  # 状态管理 (简单起见用原生，这里仅引入图标库等)
-  
-  # 🧠 AI 模型运行库
+  # 🤖 TFLite 模型运行库
   tflite_flutter: ^0.10.4
-  
-  # 🖼️ 图像处理 (像素级操作)
+  # 🖼️ 图像处理库 (Dart版的OpenCV)
   image: ^4.1.7
-  
-  # 📂 文件选择
-  image_picker: ^1.0.7
-  file_picker: ^6.1.1
-  
-  # 💾 保存图片到相册
-  gal: ^2.3.0
+  # 📂 文件选择器
+  file_picker: ^8.0.0
+  # 🔒 权限管理
   permission_handler: ^11.3.0
+  # 💾 路径获取
+  path_provider: ^2.1.2
+  # 💅 UI 图标
+  cupertino_icons: ^1.0.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^2.0.0
-  # 自动化图标生成
-  flutter_launcher_icons: ^0.13.1
-  flutter_native_splash: ^2.3.1
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
-
-  # 注册资源
+  
+  # 📦 资源注册
   assets:
     - assets/models/
-    - assets/images/
-
-# 图标配置
-flutter_launcher_icons:
-  android: "launcher_icon"
-  ios: false
-  image_path: "assets/images/icon.png"
-  min_sdk_android: 21
-
-# 启动图配置
-flutter_native_splash:
-  color: "#FFFFFF"
-  image: "assets/images/splash.png"
-  android_12:
-    color: "#FFFFFF"
-    image: "assets/images/splash.png"

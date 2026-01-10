@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 👇 添加这些权限 👇 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <!-- 如果需要批量处理文件夹，Android 11+ 可能需要此权限，但为了过审通常只用上面即可，这里作为个人工具加上 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <!-- 👆 添加结束 👆 -->
+
+    <application
+        android:label="LOFTER修复"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true"> <!-- 👈 这一行也很重要 -->
+        
+        <!-- ... 下面内容不变 ... -->

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lofter_repair/screens/home_screen.dart';
+import 'pages/home_page.dart';
 
 void main() {
   runApp(const MyApp());
@@ -11,13 +11,17 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'LOFTER 修复助手',
+      debugShowCheckedModeBanner: false,
+      title: 'LOFTER 修复神器',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+          elevation: 0,
+        ),
       ),
-      home: const HomeScreen(),
+      home: const HomePage(),
     );
   }
 }
