@@ -1,12 +1,13 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:gal/gal.dart'; // 👈 改用 gal
+import 'package:gal/gal.dart';
 import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
 import '../services/yolo_service.dart';
 import '../services/image_processor.dart';
 import '../models/process_task.dart';
+import '../utils/cleaner.dart'; // 引入清理工具
 
 class BatchFixPage extends StatefulWidget {
   const BatchFixPage({super.key});
@@ -26,10 +27,14 @@ class _BatchFixPageState extends State<BatchFixPage> {
   @override
   void initState() {
     super.initState();
+    Cleaner.nukeCache(); // 进页面清理
     _yoloService.initModel();
   }
 
   Future<void> _pickFolder() async {
+    // 选图前清理
+    await Cleaner.nukeCache();
+    
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       type: FileType.image,
@@ -69,14 +74,13 @@ class _BatchFixPageState extends State<BatchFixPage> {
     });
     
     if (newTasks.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未找到符合命名规则的图片对 (-wm, -orig)")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未找到符合命名规则的图片对")));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("成功匹配 ${newTasks.length} 对图片")));
     }
   }
 
   Future<void> _startBatchProcess() async {
-    // 提前请求权限
     await Permission.photos.request();
 
     setState(() {
@@ -91,7 +95,9 @@ class _BatchFixPageState extends State<BatchFixPage> {
       setState(() => task.status = 'processing');
 
       try {
-        final box = await _yoloService.detectWatermark(task.wmFile.path);
+        // 👇👇👇 【修复点】传入默认置信度 0.25 👇👇👇
+        final box = await _yoloService.detectWatermark(task.wmFile.path, 0.25);
+        
         if (box == null) {
           setState(() {
             task.status = 'failed';
@@ -101,8 +107,6 @@ class _BatchFixPageState extends State<BatchFixPage> {
         }
 
         final fixedFile = await _imageProcessor.repairImage(task.wmFile.path, task.origFile.path, box);
-        
-        // 👇 自动保存到相册 (改用 Gal)
         await Gal.putImage(fixedFile.path);
 
         setState(() {
@@ -119,8 +123,11 @@ class _BatchFixPageState extends State<BatchFixPage> {
       }
     }
 
-    setState(() => isProcessing = false);
+    // 任务结束后清理
+    await Cleaner.nukeCache();
+    
     if(mounted) {
+      setState(() => isProcessing = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("批处理完成，成功 $successCount 张")));
     }
   }
