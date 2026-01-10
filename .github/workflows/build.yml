@@ -1,4 +1,4 @@
-name: Flutter 3.22 Goldilocks Build
+name: Flutter Manual Fix Build
 on:
   workflow_dispatch:
 
@@ -19,50 +19,83 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
-          # Flutter 3.22 + Gradle 8 需要 Java 17
           java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          # 👇👇👇 核心：使用黄金版本 3.22.2 👇👇👇
-          # 它既支持 Gradle 8 (适配新插件)，又保留了旧变量 (适配 gal)
-          flutter-version: '3.22.2'
+          # 使用最新版，保证 Gradle 引擎没问题
+          flutter-version: '3.24.3'
           channel: 'stable'
 
       # =========================================================
-      # 1. 生成骨架 (原汤化原食)
+      # 1. 生成骨架
       # =========================================================
       - name: Generate Scaffolding
         run: |
           rm -rf android
-          # 3.22.2 生成的骨架默认就是 AGP 8.1 + Kotlin 1.9
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
           echo "✅ 骨架已生成"
 
       # =========================================================
-      # 2. 注入依赖 (仅修改 app/build.gradle)
+      # 2. 【核心】手动生成配置文件 (专门修复 gal 报错)
       # =========================================================
-      - name: Inject Dependencies
+      - name: Manual Config Injection
         run: |
-          APP_BUILD_GRADLE="android/app/build.gradle"
+          # 1. 修复 "unknown property 'flutter'"
+          # 手动创建 local.properties，明确告诉插件 Flutter 在哪
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
+          echo "✅ local.properties 已强制生成"
           
-          # 1. 注入 TFLite 和 OpenCV 依赖
-          # 使用 sed 在 dependencies { 后面追加内容
-          sed -i '/dependencies {/a \    implementation "org.tensorflow:tensorflow-lite:2.14.0"\n    implementation "org.tensorflow:tensorflow-lite-support:0.4.4"\n    implementation "com.quickbirdstudios:opencv:4.5.3.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"' $APP_BUILD_GRADLE
+          # 2. 修复 "compileSdkVersion is not specified"
+          # 既然插件想找 ext 变量，我们就直接把这一段补丁贴到 build.gradle 最前面
           
-          # 2. 注入 packagingOptions (解决 .so 冲突)
-          # 在 android { 块内部追加
-          sed -i '/android {/a \    packagingOptions {\n        pickFirst "lib/arm64-v8a/libc++_shared.so"\n        pickFirst "lib/armeabi-v7a/libc++_shared.so"\n    }' $APP_BUILD_GRADLE
+          ROOT_GRADLE="android/build.gradle"
           
-          # 3. 修正 MinSDK (TFLite 需要 24)
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $APP_BUILD_GRADLE
-          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $APP_BUILD_GRADLE
+          # 创建一个临时文件，包含定义好的变量
+          cat > config_patch.txt <<EOF
+          // --- 手动注入的兼容性变量 (Fix for gal plugin) ---
+          buildscript {
+              ext {
+                  buildToolsVersion = "34.0.0"
+                  compileSdkVersion = 34
+                  minSdkVersion = 24
+                  targetSdkVersion = 34
+                  ndkVersion = "26.1.10909125"
+                  kotlin_version = "1.9.0"
+              }
+          }
+          // ------------------------------------------------
+          EOF
           
-          echo "✅ 依赖库注入完成"
+          # 把原文件拼接到补丁后面，相当于插在头部
+          cat $ROOT_GRADLE >> config_patch.txt
+          mv config_patch.txt $ROOT_GRADLE
+          
+          echo "✅ 根 build.gradle 已注入兼容变量"
+          head -n 20 $ROOT_GRADLE
 
       # =========================================================
-      # 3. 注入业务代码 (灵魂覆盖)
+      # 3. 注入 TFLite 和 OpenCV 依赖
+      # =========================================================
+      - name: Inject App Dependencies
+        run: |
+          APP_GRADLE="android/app/build.gradle"
+          
+          # 注入依赖
+          sed -i '/dependencies {/a \    implementation "org.tensorflow:tensorflow-lite:2.14.0"\n    implementation "org.tensorflow:tensorflow-lite-support:0.4.4"\n    implementation "com.quickbirdstudios:opencv:4.5.3.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"' $APP_GRADLE
+          
+          # 注入 .so 处理
+          sed -i '/android {/a \    packagingOptions {\n        pickFirst "lib/arm64-v8a/libc++_shared.so"\n        pickFirst "lib/armeabi-v7a/libc++_shared.so"\n    }' $APP_GRADLE
+          
+          # 修正 MinSDK
+          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $APP_GRADLE
+          
+          echo "✅ APP 依赖注入完成"
+
+      # =========================================================
+      # 4. 注入业务代码
       # =========================================================
       - name: Inject Source Code
         run: |
@@ -73,10 +106,10 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
           
-          echo "✅ 业务代码注入完毕"
+          echo "✅ 业务代码注入完成"
 
       # =========================================================
-      # 4. 常规打包流程
+      # 5. 打包
       # =========================================================
       - name: Generate Icon
         run: |
