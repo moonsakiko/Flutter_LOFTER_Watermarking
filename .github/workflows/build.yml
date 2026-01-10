@@ -1,4 +1,4 @@
-name: Flutter Cloud Hybrid Fix
+name: Flutter 3.24 Modern Build
 on:
   workflow_dispatch:
 
@@ -19,166 +19,69 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
+          # Flutter 3.24 + Gradle 8 需要 Java 17
           java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
+          # 👇 关键点：使用新版 Flutter，它天生支持 Gradle 8 和 Kotlin 1.9
+          flutter-version: '3.24.3'
           channel: 'stable'
 
       # =========================================================
-      # 1. 生成骨架 (获取包含插件逻辑的 settings.gradle)
+      # 1. 生成现代骨架 (Native Gradle 8.0 + Kotlin 1.9)
       # =========================================================
-      - name: Generate Scaffolding
+      - name: Generate Modern Scaffolding
         run: |
           rm -rf android
+          # 使用新版 Flutter 生成项目，自动就是最新标准，无需修补
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
-          echo "✅ 骨架已生成"
+          echo "✅ Flutter 3.24 标准骨架已生成"
 
       # =========================================================
-      # 2. 升级 Gradle 引擎 (修改文本)
+      # 2. 注入原生依赖 (只插入，不覆盖，保证安全)
       # =========================================================
-      - name: Upgrade Gradle Wrapper
+      - name: Inject Native Dependencies
         run: |
-          PROP_FILE="android/gradle/wrapper/gradle-wrapper.properties"
-          sed -i 's/gradle-.*-all.zip/gradle-8.0-all.zip/g' $PROP_FILE
-          echo "✅ Gradle Wrapper 指向 8.0"
+          BUILD_GRADLE="android/app/build.gradle"
+          
+          # 1. 修正 MinSDK (TFLite 需要 24)
+          # Flutter 3.24 默认写法是 flutter.minSdkVersion，我们直接改写
+          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $BUILD_GRADLE
+          
+          # 2. 注入依赖库
+          # 我们在 "dependencies {" 这一行后面，插入我们的依赖
+          # 这样就不会破坏 Flutter 原有的依赖结构
+          sed -i '/dependencies {/a \    implementation "org.tensorflow:tensorflow-lite:2.14.0"\n    implementation "org.tensorflow:tensorflow-lite-support:0.4.4"\n    implementation "com.quickbirdstudios:opencv:4.5.3.0"\n    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"' $BUILD_GRADLE
+          
+          # 3. 解决 OpenCV 的 .so 文件冲突
+          # 在 android { ... } 块的最后添加 packagingOptions
+          # 简单的做法是直接追加到文件末尾，但在 android {} 闭包外追加可能会报错
+          # 我们尝试用 sed 在 buildTypes 后面插入
+          sed -i '/buildTypes {/i \    packagingOptions {\n        pickFirst "lib/arm64-v8a/libc++_shared.so"\n        pickFirst "lib/armeabi-v7a/libc++_shared.so"\n    }' $BUILD_GRADLE
+          
+          echo "✅ 依赖库注入完成"
+          # 打印出来检查一下
+          cat $BUILD_GRADLE
 
       # =========================================================
-      # 3. 关键修正：修改 settings.gradle (注入版本号，但不删除插件逻辑)
-      # =========================================================
-      - name: Patch settings.gradle
-        run: |
-          SETTINGS_FILE="android/settings.gradle"
-          
-          # 这一步非常关键！
-          # 我们不重写文件，而是找到 Flutter 插件那一行，在它后面追加 AGP 和 Kotlin 的版本
-          # 这样既保留了 Flutter 的插件加载逻辑，又升级了版本
-          sed -i 's/id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false/id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false\n    id "com.android.application" version "8.1.0" apply false\n    id "org.jetbrains.kotlin.android" version "1.9.0" apply false/g' $SETTINGS_FILE
-          
-          cat $SETTINGS_FILE
-          echo "✅ settings.gradle 已修正版本"
-
-      # =========================================================
-      # 4. 清理根 build.gradle (防止旧语法冲突)
-      # =========================================================
-      - name: Clean Root build.gradle
-        run: |
-          # 覆盖为最简模式，去除旧的 buildscript 块
-          cat > android/build.gradle <<EOF
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          rootProject.buildDir = "../build"
-          subprojects {
-              project.buildDir = "\${rootProject.buildDir}/\${project.name}"
-          }
-          subprojects {
-              project.evaluationDependsOn(":app")
-          }
-          tasks.register("clean", Delete) {
-              delete rootProject.buildDir
-          }
-          EOF
-
-      # =========================================================
-      # 5. 重写 APP build.gradle (注入依赖)
-      # =========================================================
-      - name: Overwrite App build.gradle
-        run: |
-          cat > android/app/build.gradle <<EOF
-          plugins {
-              id "com.android.application"
-              id "org.jetbrains.kotlin.android"
-              id "dev.flutter.flutter-gradle-plugin"
-          }
-          
-          def localProperties = new Properties()
-          def localPropertiesFile = rootProject.file('local.properties')
-          if (localPropertiesFile.exists()) {
-              localPropertiesFile.withReader('UTF-8') { reader ->
-                  localProperties.load(reader)
-              }
-          }
-          
-          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
-          if (flutterVersionCode == null) {
-              flutterVersionCode = '1'
-          }
-          
-          def flutterVersionName = localProperties.getProperty('flutter.versionName')
-          if (flutterVersionName == null) {
-              flutterVersionName = '1.0'
-          }
-          
-          android {
-              namespace "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"
-              compileSdkVersion 34
-              ndkVersion flutter.ndkVersion
-          
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_1_8
-                  targetCompatibility JavaVersion.VERSION_1_8
-              }
-          
-              kotlinOptions {
-                  jvmTarget = '1.8'
-              }
-          
-              sourceSets {
-                  main.java.srcDirs += 'src/main/kotlin'
-              }
-          
-              defaultConfig {
-                  applicationId "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"
-                  minSdkVersion 24
-                  targetSdkVersion 34
-                  versionCode flutterVersionCode.toInteger()
-                  versionName flutterVersionName
-              }
-          
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.debug
-                      minifyEnabled false
-                      shrinkResources false
-                  }
-              }
-              
-              packagingOptions {
-                  pickFirst 'lib/arm64-v8a/libc++_shared.so'
-                  pickFirst 'lib/armeabi-v7a/libc++_shared.so'
-              }
-          }
-          
-          flutter {
-              source '../..'
-          }
-          
-          dependencies {
-              implementation 'org.tensorflow:tensorflow-lite:2.14.0'
-              implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
-              implementation 'com.quickbirdstudios:opencv:4.5.3.0'
-              implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
-          }
-          EOF
-
-      # =========================================================
-      # 6. 注入业务代码
+      # 3. 注入业务代码 (灵魂覆盖)
       # =========================================================
       - name: Inject Source Code
         run: |
+          # 覆盖 Manifest
           cp -f android_overlay/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          
+          # 覆盖 MainActivity
+          # 确保目录存在
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
-          echo "✅ 业务代码注入完成"
+          
+          echo "✅ 核心代码注入完毕"
 
       # =========================================================
-      # 7. 打包流程
+      # 4. 常规打包流程
       # =========================================================
       - name: Generate Icon
         run: |
