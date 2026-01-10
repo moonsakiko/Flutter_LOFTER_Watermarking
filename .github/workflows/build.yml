@@ -34,10 +34,9 @@ jobs:
             flutter create . --platforms android --project-name lofter_fixer
           fi
 
-      # 👇👇👇 【修正版】精准定位 android { 块 👇👇👇
+      # 1. 强力修复 build.gradle (AI 核心配置)
       - name: Nuclear Fix for Android Build
         run: |
-          # 1. 使用 Python 脚本精细修改 build.gradle
           python3 -c "
           import os
 
@@ -45,22 +44,18 @@ jobs:
           with open(gradle_path, 'r') as f:
               content = f.read()
 
-          # 策略A：如果已经开启混淆，强制关闭
+          # 策略A：尝试关闭混淆
           content = content.replace('minifyEnabled true', 'minifyEnabled false')
           content = content.replace('shrinkResources true', 'shrinkResources false')
 
-          # 策略B：如果没写混淆配置，强制注入关闭命令 (插在 release 签名配置后面)
-          if 'minifyEnabled' not in content:
-              content = content.replace('signingConfig signingConfigs.release', 'signingConfig signingConfigs.release\n            minifyEnabled false\n            shrinkResources false')
-
-          # 策略C：注入 noCompress (关键修正：插在 android { 紧后面，而不是文件末尾)
+          # 策略B：注入 noCompress (AI 模型必须)
+          # 插在 android { 紧后面
           if 'aaptOptions' not in content:
-              # 替换 'android {' 为 'android { \n aaptOptions { noCompress "tflite" }'
               content = content.replace('android {', 'android {\n    aaptOptions {\n        noCompress \"tflite\"\n    }\n')
 
           with open(gradle_path, 'w') as f:
               f.write(content)
-          print('✅ 已修正 build.gradle 配置 (精准注入)')
+          print('✅ build.gradle 修复完成')
           "
 
           # 2. 修复 Kotlin 版本
@@ -81,6 +76,17 @@ jobs:
               f.write(new_content)
           "
 
+      # 👇👇👇 【复活】ProGuard 规则 (防止 R8 报错) 👇👇👇
+      # 就算上面的关闭混淆失败了，有了这个白名单，R8 也能跑通过！
+      - name: Configure ProGuard Rules
+        run: |
+          echo "-dontwarn java.beans.**" > android/app/proguard-rules.pro
+          echo "-dontwarn java.awt.**" >> android/app/proguard-rules.pro
+          echo "-dontwarn org.yaml.snakeyaml.**" >> android/app/proguard-rules.pro
+          echo "-keep class org.yaml.snakeyaml.** { *; }" >> android/app/proguard-rules.pro
+          echo "-keep class com.ultralytics.** { *; }" >> android/app/proguard-rules.pro
+          echo "-keep class org.tensorflow.** { *; }" >> android/app/proguard-rules.pro
+
       - name: Install Dependencies
         run: flutter pub get
 
@@ -97,7 +103,7 @@ jobs:
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
       - name: Build APK
-        # 此时已经强制关闭了资源压缩，放心构建
+        # 移除 no-tree-shake-icons，因为上面已经配置了规则
         run: flutter build apk --release --target-platform android-arm64
 
       - name: Rename and Upload
