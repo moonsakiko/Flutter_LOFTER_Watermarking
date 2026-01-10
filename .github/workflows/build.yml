@@ -44,24 +44,44 @@ jobs:
           with open('$MANIFEST', 'w', encoding='utf-8') as f: f.write(new_content)
           "
 
-      - name: Fix Android Environment
+      - name: Fix Android Environment (Python Safe Mode)
         run: |
-          echo "🔧 Fixing Android Build Configuration..."
+          echo "🔧 Fixing Android Build Configuration with Python..."
           
-          # 1. 修复 Kotlin 版本 (强制 1.9.0)
+          # 1. 使用 Python 精确修改 build.gradle (防止 sed 误伤)
+          python3 -c "
+          import os
+          
+          gradle_path = 'android/app/build.gradle'
+          if os.path.exists(gradle_path):
+              with open(gradle_path, 'r') as f:
+                  lines = f.readlines()
+              
+              with open(gradle_path, 'w') as f:
+                  for line in lines:
+                      # 去除首尾空格便于判断
+                      s = line.strip()
+                      # 只修改以 minSdkVersion 开头且不是注释的行
+                      if s.startswith('minSdkVersion') and not s.startswith('//'):
+                          # 保持原有缩进 (通常是8个空格)
+                          f.write('        minSdkVersion 26\n')
+                      else:
+                          f.write(line)
+              
+              # 在文件末尾追加 tflite 防压缩配置
+              with open(gradle_path, 'a') as f:
+                  f.write('\nandroid { aaptOptions { noCompress \"tflite\" } }\n')
+          "
+
+          # 2. 修复 Kotlin 版本 (settings.gradle)
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
+          
+          # 3. 修复 Kotlin 版本 (build.gradle)
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
           
-          # 2. 修复 MinSDK (改为 26 以适配 TFLite)
-          # 使用最通用的正则替换，确保替换成功
-          sed -i 's/minSdkVersion.*/minSdkVersion 26/g' android/app/build.gradle
-          
-          # 3. 防止 TFLite 库被压缩 (关键)
-          echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
-          
-          # 4. 打印修改后的文件以供检查
-          echo "--- android/app/build.gradle ---"
-          cat android/app/build.gradle
+          # 4. 打印文件内容以供检查 (如果再次失败，可以看日志)
+          echo "--- android/app/build.gradle HEAD ---"
+          head -n 50 android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
