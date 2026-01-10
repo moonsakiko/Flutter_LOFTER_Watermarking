@@ -3,11 +3,14 @@ on:
   workflow_dispatch:
 
 env:
-  APP_NAME: "LOFTER去水印神器"
+  FILE_NAME: "Lofter_Watermark_Remover"
+  APP_LABEL: "LOFTER去水印神器"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      LANG: "en_US.UTF-8"
 
     steps:
       - name: Checkout Code
@@ -19,7 +22,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 保持 3.27.1
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -32,29 +34,40 @@ jobs:
             flutter create . --platforms android --project-name lofter_fixer
           fi
 
-      - name: Change App Name
+      # 👇👇👇 【修复核心】禁止压缩 tflite 文件 👇👇👇
+      - name: Fix Android Config (NoCompress & MinSDK)
         run: |
-          sed -i 's/android:label="[^"]*"/android:label="${{ env.APP_NAME }}"/g' android/app/src/main/AndroidManifest.xml
+          # 1. 注入 aaptOptions { noCompress 'tflite' }
+          # 这段脚本会把配置插到 android { ... } 块里面
+          sed -i '/android {/a \    aaptOptions {\n        noCompress "tflite"\n    }' android/app/build.gradle
 
-      - name: Fix Android Environment
-        run: |
-          # 1. 修复 Kotlin 版本
+          # 2. 修复 Kotlin 版本
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
           
-          # 2. 修复 MinSDK
+          # 3. 修复 MinSDK
           sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
+          
+          # 4. 修改 APP 中文名
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 -c "
+          import re
+          with open('$MANIFEST', 'r', encoding='utf-8') as f:
+              content = f.read()
+          new_content = re.sub(r'android:label=\"[^\"]*\"', 'android:label=\"${{ env.APP_LABEL }}\"', content)
+          with open('$MANIFEST', 'w', encoding='utf-8') as f:
+              f.write(new_content)
+          "
 
-      # 👇👇👇 【新增步骤】配置混淆规则，忽略 R8 报错 👇👇👇
       - name: Configure ProGuard Rules
         run: |
-          echo "🔧 Creating proguard-rules.pro..."
-          # 创建混淆规则文件，忽略 java.beans 和 snakeyaml 的警告
           echo "-dontwarn java.beans.**" > android/app/proguard-rules.pro
           echo "-dontwarn java.awt.**" >> android/app/proguard-rules.pro
           echo "-dontwarn org.yaml.snakeyaml.**" >> android/app/proguard-rules.pro
           echo "-keep class org.yaml.snakeyaml.** { *; }" >> android/app/proguard-rules.pro
           echo "-keep class com.ultralytics.** { *; }" >> android/app/proguard-rules.pro
+          # 👇 增加 TensorFlow 保护规则
+          echo "-keep class org.tensorflow.** { *; }" >> android/app/proguard-rules.pro
 
       - name: Install Dependencies
         run: flutter pub get
@@ -72,15 +85,14 @@ jobs:
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
       - name: Build APK
-        # 增加 --no-tree-shake-icons 防止图标报错，虽然不是必须但更稳
         run: flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
 
       - name: Rename and Upload
         run: |
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${{ env.FILE_NAME }}.apk"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}_Install_Package
-          path: "build/app/outputs/flutter-apk/${{ env.APP_NAME }}.apk"
+          name: ${{ env.FILE_NAME }}_Install_Package
+          path: "build/app/outputs/flutter-apk/${{ env.FILE_NAME }}.apk"
