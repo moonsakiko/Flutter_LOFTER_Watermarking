@@ -1,10 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:gal/gal.dart'; // 👈 改用 gal
+import 'package:gal/gal.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../services/yolo_service.dart';
 import '../services/image_processor.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 class SingleFixPage extends StatefulWidget {
   const SingleFixPage({super.key});
@@ -22,13 +22,10 @@ class _SingleFixPageState extends State<SingleFixPage> {
   final YoloService _yoloService = YoloService();
   final ImageProcessor _imageProcessor = ImageProcessor();
 
-  @override
-  void initState() {
-    super.initState();
-    _yoloService.initModel();
-  }
-
   Future<void> _pickImage(bool isWm) async {
+    // 每次选择前也清理一次，防止堆积
+    await FilePicker.platform.clearTemporaryFiles();
+    
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
     if (result != null) {
       setState(() {
@@ -53,7 +50,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
     try {
       final box = await _yoloService.detectWatermark(wmFile!.path);
       if (box == null) {
-        throw Exception("AI 未能在图片中检测到水印");
+        throw Exception("AI 未能在图片中检测到水印 (请尝试更明显的图片)");
       }
 
       final fixedFile = await _imageProcessor.repairImage(wmFile!.path, origFile!.path, box);
@@ -61,7 +58,6 @@ class _SingleFixPageState extends State<SingleFixPage> {
       setState(() {
         resultFile = fixedFile;
       });
-      
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("修复成功！")));
 
     } catch (e) {
@@ -69,11 +65,15 @@ class _SingleFixPageState extends State<SingleFixPage> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text("处理失败"),
-          content: Text(e.toString()),
+          content: Text(e.toString()), // 这里现在会显示具体的错误原因（如模型丢失）
           actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("确定"))],
         ),
       );
     } finally {
+      // 👇👇👇 无论成功失败，都清理缓存文件 👇👇👇
+      await FilePicker.platform.clearTemporaryFiles();
+      print("🧹 临时文件已清理");
+      
       setState(() => isProcessing = false);
     }
   }
@@ -81,10 +81,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
   Future<void> _saveToGallery() async {
     if (resultFile != null) {
       try {
-        // 请求权限 (Gal 通常会自动处理，但为了保险)
         await Permission.photos.request();
-        
-        // 👇 使用 Gal 保存
         await Gal.putImage(resultFile!.path);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅ 已保存到相册")));
       } catch (e) {
@@ -108,9 +105,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
                 Expanded(child: _buildSelector(origFile, "选择原图", false)),
               ],
             ),
-            
             const SizedBox(height: 20),
-            
             FilledButton.icon(
               onPressed: isProcessing ? null : _startRepair,
               icon: isProcessing 
@@ -119,9 +114,7 @@ class _SingleFixPageState extends State<SingleFixPage> {
               label: Text(isProcessing ? "AI 正在修复..." : "开始修复"),
               style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
             ),
-
             const SizedBox(height: 20),
-
             if (resultFile != null) ...[
               const Divider(),
               const Text("修复结果", style: TextStyle(fontWeight: FontWeight.bold)),

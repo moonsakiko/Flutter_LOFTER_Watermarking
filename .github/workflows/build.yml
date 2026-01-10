@@ -34,12 +34,37 @@ jobs:
             flutter create . --platforms android --project-name lofter_fixer
           fi
 
-      # 👇👇👇 【修复核心】禁止压缩 tflite 文件 👇👇👇
-      - name: Fix Android Config (NoCompress & MinSDK)
+      # 👇👇👇 【核弹级修复】关闭混淆，强制不压缩 tflite 👇👇👇
+      - name: Nuclear Fix for Android Build
         run: |
-          # 1. 注入 aaptOptions { noCompress 'tflite' }
-          # 这段脚本会把配置插到 android { ... } 块里面
-          sed -i '/android {/a \    aaptOptions {\n        noCompress "tflite"\n    }' android/app/build.gradle
+          # 1. 使用 Python 脚本精细修改 build.gradle
+          # 目标：设置 minifyEnabled false, shrinkResources false, 并添加 noCompress
+          python3 -c "
+          import os
+
+          gradle_path = 'android/app/build.gradle'
+          with open(gradle_path, 'r') as f:
+              content = f.read()
+
+          # 关闭混淆和资源压缩 (解决 AI 秒挂问题)
+          content = content.replace('minifyEnabled true', 'minifyEnabled false')
+          content = content.replace('shrinkResources true', 'shrinkResources false')
+
+          # 确保 tflite 不被压缩
+          if 'aaptOptions' not in content:
+              no_compress_block = '''
+              aaptOptions {
+                  noCompress 'tflite'
+              }
+              '''
+              # 插在 android { 内部最后
+              last_brace = content.rfind('}')
+              content = content[:last_brace] + no_compress_block + content[last_brace:]
+
+          with open(gradle_path, 'w') as f:
+              f.write(content)
+          print('✅ 已强制关闭代码混淆并设置 noCompress')
+          "
 
           # 2. 修复 Kotlin 版本
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
@@ -59,16 +84,6 @@ jobs:
               f.write(new_content)
           "
 
-      - name: Configure ProGuard Rules
-        run: |
-          echo "-dontwarn java.beans.**" > android/app/proguard-rules.pro
-          echo "-dontwarn java.awt.**" >> android/app/proguard-rules.pro
-          echo "-dontwarn org.yaml.snakeyaml.**" >> android/app/proguard-rules.pro
-          echo "-keep class org.yaml.snakeyaml.** { *; }" >> android/app/proguard-rules.pro
-          echo "-keep class com.ultralytics.** { *; }" >> android/app/proguard-rules.pro
-          # 👇 增加 TensorFlow 保护规则
-          echo "-keep class org.tensorflow.** { *; }" >> android/app/proguard-rules.pro
-
       - name: Install Dependencies
         run: flutter pub get
 
@@ -85,7 +100,8 @@ jobs:
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
       - name: Build APK
-        run: flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+        # 移除 --no-tree-shake-icons，因为我们已经全局关闭了 shrinkResources
+        run: flutter build apk --release --target-platform android-arm64
 
       - name: Rename and Upload
         run: |
