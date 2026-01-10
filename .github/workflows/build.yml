@@ -28,33 +28,39 @@ jobs:
           channel: 'stable'
 
       # =========================================================
-      # 🏗️ 阶段一：云端造壳 (生成标准工程)
+      # 🏗️ 阶段一：云端造壳
       # =========================================================
       - name: Generate Scaffolding
         run: |
           rm -rf android
-          # 生成标准安卓骨架 (默认 Gradle 7.6)
+          # 生成标准安卓骨架 (此时它默认配置的是 Gradle 7.5 或 7.6)
+          # 注意：这一步只是生成文件，不会触发构建，所以不会报错
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
           echo "✅ 标准骨架生成完毕"
 
       # =========================================================
-      # 🔧 阶段二：心脏移植 (强制升级 Gradle 引擎到 8.0)
+      # 🔧 阶段二：偷梁换柱 (纯文本修改，不运行 Gradle)
       # =========================================================
-      - name: Upgrade Gradle Wrapper
+      - name: Manual Upgrade Gradle Wrapper
         run: |
-          # 这一步会自动下载并配置 Gradle 8.0 引擎，解决 "Minimum supported Gradle" 报错
-          cd android
-          gradle wrapper --gradle-version 8.0 --distribution-type all
-          cd ..
-          echo "✅ Gradle 引擎已升级到 8.0"
+          # ❌ 绝对不要运行 'gradle wrapper' 命令，那会触发 Gradle 9 报错
+          # ✅ 我们直接修改文本文件，指鹿为马
+          
+          WRAPPER_PROP="android/gradle/wrapper/gradle-wrapper.properties"
+          
+          # 将默认的 gradle-x.x-all.zip 替换为 gradle-8.0-all.zip
+          sed -i 's/gradle-.*-all.zip/gradle-8.0-all.zip/g' $WRAPPER_PROP
+          
+          echo "👇 检查修改后的配置文件："
+          cat $WRAPPER_PROP
+          echo "✅ 已将配置指向 Gradle 8.0 (绕过了系统 Gradle 9)"
 
       # =========================================================
       # 🧠 阶段三：神经连接 (重写 settings.gradle)
       # =========================================================
-      # 这一步最关键！我们手动写入一个既包含插件连接，又锁定了新版本的配置文件。
-      # 解决了之前的 "Plugin not found" 问题。
       - name: Patch settings.gradle
         run: |
+          # 必须重写这个文件以匹配 AGP 8.1.0 和 Kotlin 1.9.0
           cat > android/settings.gradle <<EOF
           pluginManagement {
               def flutterSdkPath = {
@@ -76,7 +82,7 @@ jobs:
           
               plugins {
                   id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false
-                  // 👇 强制锁定版本，配合 Gradle 8.0
+                  // 👇 锁定 AGP 8.1.0 (需要 Gradle 8.0)
                   id "com.android.application" version "8.1.0" apply false
                   id "org.jetbrains.kotlin.android" version "1.9.0" apply false
               }
@@ -84,7 +90,7 @@ jobs:
           
           include ":app"
           EOF
-          echo "✅ settings.gradle 已精准修正 (AGP 8.1.0 + Kotlin 1.9.0)"
+          echo "✅ settings.gradle 已修正"
 
       # =========================================================
       # 💪 阶段四：肢体强化 (修改 app/build.gradle)
@@ -93,11 +99,11 @@ jobs:
         run: |
           BUILD_GRADLE="android/app/build.gradle"
           
-          # 1. 强制修改 MinSDK 为 24 (为了 TFLite)
+          # 1. 修改 MinSDK 为 24
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
           sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $BUILD_GRADLE
           
-          # 2. 追加依赖库 (TFLite, OpenCV)
+          # 2. 注入 TFLite 和 OpenCV 依赖
           cat >> $BUILD_GRADLE <<EOF
           
           dependencies {
@@ -108,28 +114,27 @@ jobs:
           }
           EOF
           
-          # 3. 确保 namespace 正确
-          # Flutter 3.19 有时生成的 namespace 是 "android"，这里强制修正
+          # 3. 修正 namespace (防止 AGP 8 报错)
           sed -i 's/namespace .*/namespace "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"/g' $BUILD_GRADLE
           
           echo "✅ app/build.gradle 已注入依赖"
 
       # =========================================================
-      # 💉 阶段五：注入灵魂 (覆盖你的代码)
+      # 💉 阶段五：注入灵魂
       # =========================================================
       - name: Inject Custom Code
         run: |
           # 覆盖 Manifest
           cp -f android_overlay/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           
-          # 覆盖 MainActivity.kt (先创建目录以防万一)
+          # 覆盖 MainActivity.kt
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
           
           echo "✅ 核心代码注入完毕"
 
       # =========================================================
-      # 🚀 阶段六：常规打包
+      # 🚀 阶段六：打包 (自动下载 Gradle 8.0)
       # =========================================================
       - name: Generate Icon
         run: |
