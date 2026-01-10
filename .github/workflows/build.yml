@@ -34,11 +34,10 @@ jobs:
             flutter create . --platforms android --project-name lofter_fixer
           fi
 
-      # 👇👇👇 【核弹级修复】关闭混淆，强制不压缩 tflite 👇👇👇
+      # 👇👇👇 【修正版】精准定位 android { 块 👇👇👇
       - name: Nuclear Fix for Android Build
         run: |
           # 1. 使用 Python 脚本精细修改 build.gradle
-          # 目标：设置 minifyEnabled false, shrinkResources false, 并添加 noCompress
           python3 -c "
           import os
 
@@ -46,24 +45,22 @@ jobs:
           with open(gradle_path, 'r') as f:
               content = f.read()
 
-          # 关闭混淆和资源压缩 (解决 AI 秒挂问题)
+          # 策略A：如果已经开启混淆，强制关闭
           content = content.replace('minifyEnabled true', 'minifyEnabled false')
           content = content.replace('shrinkResources true', 'shrinkResources false')
 
-          # 确保 tflite 不被压缩
+          # 策略B：如果没写混淆配置，强制注入关闭命令 (插在 release 签名配置后面)
+          if 'minifyEnabled' not in content:
+              content = content.replace('signingConfig signingConfigs.release', 'signingConfig signingConfigs.release\n            minifyEnabled false\n            shrinkResources false')
+
+          # 策略C：注入 noCompress (关键修正：插在 android { 紧后面，而不是文件末尾)
           if 'aaptOptions' not in content:
-              no_compress_block = '''
-              aaptOptions {
-                  noCompress 'tflite'
-              }
-              '''
-              # 插在 android { 内部最后
-              last_brace = content.rfind('}')
-              content = content[:last_brace] + no_compress_block + content[last_brace:]
+              # 替换 'android {' 为 'android { \n aaptOptions { noCompress "tflite" }'
+              content = content.replace('android {', 'android {\n    aaptOptions {\n        noCompress \"tflite\"\n    }\n')
 
           with open(gradle_path, 'w') as f:
               f.write(content)
-          print('✅ 已强制关闭代码混淆并设置 noCompress')
+          print('✅ 已修正 build.gradle 配置 (精准注入)')
           "
 
           # 2. 修复 Kotlin 版本
@@ -100,7 +97,7 @@ jobs:
           echo "storeFile=../../upload-keystore.jks" >> android/key.properties
 
       - name: Build APK
-        # 移除 --no-tree-shake-icons，因为我们已经全局关闭了 shrinkResources
+        # 此时已经强制关闭了资源压缩，放心构建
         run: flutter build apk --release --target-platform android-arm64
 
       - name: Rename and Upload
