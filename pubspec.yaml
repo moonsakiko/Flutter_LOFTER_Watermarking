@@ -11,17 +11,17 @@ dependencies:
     sdk: flutter
   # UI 组件
   cupertino_icons: ^1.0.6
-  google_fonts: ^6.1.0
+  # google_fonts: ^6.1.0  <-- ❌ 删除了这一行，解决了冲突
   
   # 功能核心
-  tflite_flutter: ^0.10.4  # TFLite 推理核心
-  image: ^4.1.7            # Dart版 OpenCV，处理像素
-  image_picker: ^1.0.7     # 选图
-  file_picker: ^6.1.1      # 批量选文件
-  path_provider: ^2.1.2    # 路径获取
-  permission_handler: ^11.3.0 # 权限管理
-  gallery_saver: ^2.3.2    # 保存到相册
-  shared_preferences: ^2.2.2 # 保存设置
+  tflite_flutter: ^0.10.4
+  image: ^4.1.7
+  image_picker: ^1.0.7
+  file_picker: ^6.1.1
+  path_provider: ^2.1.2
+  permission_handler: ^11.3.0
+  gallery_saver: ^2.3.2
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:
@@ -29,15 +29,17 @@ dev_dependencies:
   flutter_lints: ^3.0.0
   flutter_launcher_icons: ^0.13.1
 
+# 强制统一依赖版本 (兜底策略)
+dependency_overrides:
+  http: ^0.13.6
+
 flutter:
   uses-material-design: true
   
-  # 资源注册
   assets:
     - assets/images/
-    - assets/models/  # 必须注册模型目录
+    - assets/models/
 
-# 图标配置 (可选)
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: false
