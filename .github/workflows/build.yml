@@ -44,44 +44,26 @@ jobs:
           with open('$MANIFEST', 'w', encoding='utf-8') as f: f.write(new_content)
           "
 
-      - name: Fix Android Environment (Regex Force Mode)
+      - name: Fix Android Environment (The Clean Way)
         run: |
-          echo "🔧 Fixing Android Build Configuration with Regex..."
-          
-          python3 -c "
-          import re
-          import os
-          
-          gradle_path = 'android/app/build.gradle'
-          
-          if os.path.exists(gradle_path):
-              with open(gradle_path, 'r') as f:
-                  content = f.read()
-              
-              # 1. 暴力正则替换 minSdkVersion (不管它原本是变量还是数字)
-              # 匹配 minSdkVersion 后面跟着空格和任意字符，直到行尾
-              content = re.sub(r'minSdkVersion\s+.*', 'minSdkVersion 26', content)
-              
-              # 2. 确保添加 tflite 防压缩配置
-              if 'noCompress' not in content:
-                  content += '\nandroid { aaptOptions { noCompress \"tflite\" } }\n'
-              
-              with open(gradle_path, 'w') as f:
-                  f.write(content)
-              
-              print('✅ build.gradle modified successfully.')
-          else:
-              print('❌ Error: android/app/build.gradle not found!')
-          "
+          echo "🔧 Configuring Android Environment..."
 
-          # 3. 修复 Kotlin 版本
+          # 1. 【核心修复】通过 local.properties 覆盖 MinSDK
+          # 这是官方推荐的方式，不用去改 build.gradle 代码，绝对安全！
+          echo "flutter.minSdkVersion=26" >> android/local.properties
+          
+          # 2. 【TFLite修复】追加 noCompress 配置到 build.gradle 末尾
+          # Gradle 允许追加多个 android {} 块，它们会自动合并，这样非常安全。
+          echo "" >> android/app/build.gradle
+          echo "android { aaptOptions { noCompress 'tflite' } }" >> android/app/build.gradle
+          
+          # 3. 【Kotlin修复】解决插件冲突
           sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.0"/g' android/settings.gradle
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.0'/g" android/build.gradle
-          
-          # 4. 【关键】打印文件内容以供查验 (Debug)
-          echo "👇👇👇 CONTENT OF android/app/build.gradle 👇👇👇"
-          cat android/app/build.gradle
-          echo "👆👆👆 END OF CONTENT 👆👆👆"
+
+          # 4. 打印 local.properties 确认修改
+          echo "--- android/local.properties Content ---"
+          cat android/local.properties
 
       - name: Install Dependencies
         run: flutter pub get
