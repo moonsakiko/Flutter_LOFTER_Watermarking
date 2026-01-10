@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
 
 env:
-  # 必须和 MainActivity.kt 里的 package 保持一致
   ORG_NAME: "com.example"
   PROJECT_NAME: "lofter_fixer"
   APP_CHINESE_NAME: "LOFTER去水印"
@@ -33,26 +32,36 @@ jobs:
       # ----------------------------------------------------------------
       - name: Generate Scaffolding
         run: |
-          # 1. 如果本地存在旧的 android 文件夹，先删掉，防止干扰
+          # 1. 清理旧文件
           rm -rf android
           
-          # 2. 让 Flutter 官方命令生成最标准的安卓工程
-          # 这会自动生成正确的 Gradle Wrapper (gradlew) 和目录结构
+          # 2. 生成标准骨架 (此时默认是 Gradle 7.6.3)
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
           
           echo "✅ 标准骨架已生成"
 
       # ----------------------------------------------------------------
-      # 💉 核心步骤 2：注入灵魂 (关键！)
+      # 🆙 核心步骤 2：【新增】暴力升级 Gradle 引擎
+      # ----------------------------------------------------------------
+      - name: Upgrade Gradle Wrapper to 8.0
+        run: |
+          echo "🔧 正在强制升级 Gradle 版本..."
+          WRAPPER_PROP="android/gradle/wrapper/gradle-wrapper.properties"
+          
+          # 使用 sed 命令，将里面的 7.x 版本直接替换为 8.0
+          sed -i 's/gradle-.*-all.zip/gradle-8.0-all.zip/g' $WRAPPER_PROP
+          
+          # 打印一下确认是否修改成功
+          cat $WRAPPER_PROP
+          echo "✅ Gradle 引擎已强制升级为 8.0"
+
+      # ----------------------------------------------------------------
+      # 💉 核心步骤 3：注入灵魂
       # ----------------------------------------------------------------
       - name: Inject Custom Code
         run: |
           echo "🚚 正在将 android_overlay 的内容注入到 android 目录..."
-          
-          # 强制覆盖 (-f), 递归 (-r)
-          # 把我们准备好的核心代码，覆盖到刚刚生成的骨架里
           cp -rf android_overlay/* android/
-          
           echo "✅ 代码注入完毕！"
 
       # ----------------------------------------------------------------
