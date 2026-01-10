@@ -1,4 +1,4 @@
-name: Flutter Cloud Total Overwrite
+name: Flutter Cloud Hybrid Fix
 on:
   workflow_dispatch:
 
@@ -28,7 +28,7 @@ jobs:
           channel: 'stable'
 
       # =========================================================
-      # 1. 生成骨架 (获取目录结构)
+      # 1. 生成骨架 (获取包含插件逻辑的 settings.gradle)
       # =========================================================
       - name: Generate Scaffolding
         run: |
@@ -37,50 +37,35 @@ jobs:
           echo "✅ 骨架已生成"
 
       # =========================================================
-      # 2. 升级引擎 (文本修改，避开 Gradle 9)
+      # 2. 升级 Gradle 引擎 (修改文本)
       # =========================================================
-      - name: Upgrade Gradle Wrapper Text
+      - name: Upgrade Gradle Wrapper
         run: |
           PROP_FILE="android/gradle/wrapper/gradle-wrapper.properties"
           sed -i 's/gradle-.*-all.zip/gradle-8.0-all.zip/g' $PROP_FILE
           echo "✅ Gradle Wrapper 指向 8.0"
 
       # =========================================================
-      # 3. 重写 settings.gradle (定义插件版本)
+      # 3. 关键修正：修改 settings.gradle (注入版本号，但不删除插件逻辑)
       # =========================================================
-      - name: Overwrite settings.gradle
+      - name: Patch settings.gradle
         run: |
-          cat > android/settings.gradle <<EOF
-          pluginManagement {
-              def flutterSdkPath = {
-                  def properties = new Properties()
-                  file("local.properties").withInputStream { properties.load(it) }
-                  def flutterSdkPath = properties.getProperty("flutter.sdk")
-                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
-                  return flutterSdkPath
-              }
-              settings.ext.flutterSdkPath = flutterSdkPath()
-              includeBuild("\${settings.ext.flutterSdkPath}/packages/flutter_tools/gradle")
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-              plugins {
-                  id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false
-                  id "com.android.application" version "8.1.0" apply false
-                  id "org.jetbrains.kotlin.android" version "1.9.0" apply false
-              }
-          }
-          include ":app"
-          EOF
-          echo "✅ settings.gradle 全量重写完成"
+          SETTINGS_FILE="android/settings.gradle"
+          
+          # 这一步非常关键！
+          # 我们不重写文件，而是找到 Flutter 插件那一行，在它后面追加 AGP 和 Kotlin 的版本
+          # 这样既保留了 Flutter 的插件加载逻辑，又升级了版本
+          sed -i 's/id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false/id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false\n    id "com.android.application" version "8.1.0" apply false\n    id "org.jetbrains.kotlin.android" version "1.9.0" apply false/g' $SETTINGS_FILE
+          
+          cat $SETTINGS_FILE
+          echo "✅ settings.gradle 已修正版本"
 
       # =========================================================
-      # 4. 重写根 build.gradle (清理旧配置)
+      # 4. 清理根 build.gradle (防止旧语法冲突)
       # =========================================================
-      - name: Overwrite Root build.gradle
+      - name: Clean Root build.gradle
         run: |
+          # 覆盖为最简模式，去除旧的 buildscript 块
           cat > android/build.gradle <<EOF
           allprojects {
               repositories {
@@ -99,15 +84,12 @@ jobs:
               delete rootProject.buildDir
           }
           EOF
-          echo "✅ 根 build.gradle 全量重写完成"
 
       # =========================================================
-      # 5. 重写 APP build.gradle (关键！统一插件ID + 注入依赖)
+      # 5. 重写 APP build.gradle (注入依赖)
       # =========================================================
       - name: Overwrite App build.gradle
         run: |
-          # 注意：这里直接使用了新版插件 ID org.jetbrains.kotlin.android
-          # 这就解决了 "Plugin kotlin-android not found" 的报错
           cat > android/app/build.gradle <<EOF
           plugins {
               id "com.android.application"
@@ -184,17 +166,13 @@ jobs:
               implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
           }
           EOF
-          echo "✅ APP build.gradle 全量重写完成 (含 TFLite/OpenCV)"
 
       # =========================================================
       # 6. 注入业务代码
       # =========================================================
       - name: Inject Source Code
         run: |
-          # 覆盖 Manifest
           cp -f android_overlay/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
-          
-          # 覆盖 MainActivity
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
           echo "✅ 业务代码注入完成"
