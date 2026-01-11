@@ -1,13 +1,14 @@
 buildscript {
-    ext.kotlin_version = '1.9.0' // 👈 强制指定 Kotlin 版本
+    ext.kotlin_version = '1.9.0' // 锁定 Kotlin 版本
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        // 👇 这里定义插件的“真身”和版本
-        classpath 'com.android.tools.build:gradle:7.3.0' // 适配 Flutter 3.19 的稳定版 AGP
+        // 锁定 Android 构建工具版本
+        classpath 'com.android.tools.build:gradle:7.3.0'
+        // 锁定 Kotlin 插件
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 }
