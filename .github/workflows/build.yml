@@ -1,4 +1,4 @@
-name: Flutter Native Safe Build
+name: Flutter Native Final Build
 on:
   workflow_dispatch:
 
@@ -27,56 +27,132 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      # 1. 生成骨架
+      # =========================================================
+      # 1. 生成骨架 (获取 Gradle Wrapper 和 settings.gradle)
+      # =========================================================
       - name: Generate Scaffolding
         run: |
           rm -rf android
           flutter create . --org ${{ env.ORG_NAME }} --project-name ${{ env.PROJECT_NAME }} --platforms android -a kotlin
+          echo "✅ 骨架已生成"
 
-      # 2. 注入依赖 (使用追加模式，绝对安全)
-      - name: Inject Dependencies safely
+      # =========================================================
+      # 2. 【核心】全量重写 app/build.gradle
+      # =========================================================
+      - name: Overwrite App Build Gradle
         run: |
           APP_GRADLE="android/app/build.gradle"
           
-          # 技巧：不要试图插入到原有的 dependencies 块里，直接在文件末尾加一个新的块
-          # Gradle 会自动合并它们
-          cat >> $APP_GRADLE <<EOF
+          # 直接写入完整且正确的文件内容
+          cat > $APP_GRADLE <<EOF
+          plugins {
+              id "com.android.application"
+              // Flutter 3.19 默认生成的 settings.gradle 对应这个插件ID，不要改
+              id "kotlin-android" 
+              id "dev.flutter.flutter-gradle-plugin"
+          }
+          
+          def localProperties = new Properties()
+          def localPropertiesFile = rootProject.file('local.properties')
+          if (localPropertiesFile.exists()) {
+              localPropertiesFile.withReader('UTF-8') { reader ->
+                  localProperties.load(reader)
+              }
+          }
+          
+          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+          if (flutterVersionCode == null) {
+              flutterVersionCode = '1'
+          }
+          
+          def flutterVersionName = localProperties.getProperty('flutter.versionName')
+          if (flutterVersionName == null) {
+              flutterVersionName = '1.0'
+          }
+          
+          android {
+              namespace "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"
+              compileSdkVersion 34
+              ndkVersion flutter.ndkVersion
+          
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          
+              kotlinOptions {
+                  jvmTarget = '1.8'
+              }
+          
+              sourceSets {
+                  main.java.srcDirs += 'src/main/kotlin'
+              }
+          
+              defaultConfig {
+                  applicationId "${{ env.ORG_NAME }}.${{ env.PROJECT_NAME }}"
+                  // TFLite 要求最低 24
+                  minSdkVersion 24
+                  targetSdkVersion 34
+                  versionCode flutterVersionCode.toInteger()
+                  versionName flutterVersionName
+              }
+          
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                      // 必须关闭混淆，否则 OpenCV 和 TFLite 会崩
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+              
+              // 👇 解决 .so 库冲突 (OpenCV)
+              packagingOptions {
+                  pickFirst 'lib/arm64-v8a/libc++_shared.so'
+                  pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+              }
+              
+              // 👇 防止 TFLite 模型被压缩导致无法加载
+              aaptOptions {
+                  noCompress "tflite"
+              }
+          }
+          
+          flutter {
+              source '../..'
+          }
           
           dependencies {
+              // 👇 这里是你的原生依赖
               implementation "org.tensorflow:tensorflow-lite:2.14.0"
               implementation "org.tensorflow:tensorflow-lite-support:0.4.4"
               implementation "com.quickbirdstudios:opencv:4.5.3.0"
               implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
           }
-          
-          android {
-              packagingOptions {
-                  pickFirst "lib/arm64-v8a/libc++_shared.so"
-                  pickFirst "lib/armeabi-v7a/libc++_shared.so"
-              }
-          }
           EOF
           
-          # 只保留这一个 sed，因为它很简单，不容易出错
-          sed -i 's/minSdkVersion .*/minSdkVersion 24/g' $APP_GRADLE
-          
-          echo "✅ 依赖已追加到文件末尾"
-          tail -n 20 $APP_GRADLE
+          echo "✅ app/build.gradle 已全量重写"
 
+      # =========================================================
       # 3. 注入业务代码
+      # =========================================================
       - name: Inject Source Code
         run: |
           cp -f android_overlay/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           mkdir -p android/app/src/main/kotlin/com/example/lofter_fixer/
           cp -f android_overlay/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt android/app/src/main/kotlin/com/example/lofter_fixer/MainActivity.kt
 
+      # =========================================================
       # 4. 生成 local.properties
+      # =========================================================
       - name: Generate local.properties
         run: |
           echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
           echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
 
-      # 5. 打包
+      # =========================================================
+      # 5. 打包流程
+      # =========================================================
       - name: Generate Icon
         run: |
           flutter pub get
