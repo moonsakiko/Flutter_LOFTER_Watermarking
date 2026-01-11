@@ -17,10 +17,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
-import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Rect
-import org.opencv.core.Scalar
 import org.opencv.imgproc.Imgproc
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
@@ -30,8 +28,6 @@ import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
@@ -96,11 +92,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float): String {
-        // 1. 读取图片
         val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
 
-        // 2. 预处理
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
             .add(NormalizeOp(0f, 255f))
@@ -108,7 +102,6 @@ class MainActivity : FlutterActivity() {
         var tImage = TensorImage.fromBitmap(wmBitmap)
         tImage = imageProcessor.process(tImage)
 
-        // 3. 推理
         val outputTensor = tflite!!.getOutputTensor(0)
         val outputShape = outputTensor.shape() 
         val dim1 = outputShape[1]
@@ -117,18 +110,14 @@ class MainActivity : FlutterActivity() {
         
         tflite!!.run(tImage.buffer, outputArray)
 
-        // 4. 解析
         val bestBox = if (dim1 > dim2) {
              parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         } else {
              parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         }
 
-        // 5. 修复与保存
         return if (bestBox != null) {
             try {
-                // 打印调试信息，让你知道到底修复了哪里
-                Log.d("Fixer", "Fixing Rect: $bestBox on image ${wmBitmap.width}x${wmBitmap.height}")
                 val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
                 "SUCCESS: $savedPath"
             } catch (e: Exception) {
@@ -162,12 +151,9 @@ class MainActivity : FlutterActivity() {
         return convertToRect(rows[bestIdx][0], rows[bestIdx][1], rows[bestIdx][2], rows[bestIdx][3], imgW, imgH, pad)
     }
 
-    // --- ✅ 关键修复：自适应坐标归一化检测 ---
     private fun convertToRect(cx: Float, cy: Float, w: Float, h: Float, imgW: Int, imgH: Int, paddingRatio: Float): Rect {
-        // 检测是否为归一化坐标 (0.0 - 1.0)
-        // 如果 w 小于 1.0，说明是归一化的，需要乘以 INPUT_SIZE 还原回 640 尺度
+        // 自适应检测坐标是否归一化
         val isNormalized = w < 1.0f 
-        
         val normCx = if (isNormalized) cx * INPUT_SIZE else cx
         val normCy = if (isNormalized) cy * INPUT_SIZE else cy
         val normW = if (isNormalized) w * INPUT_SIZE else w
@@ -192,26 +178,24 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // --- ✅ 关键修复：格式对齐 + 调试绿框 ---
+    // --- ✅ 关键修复：移除多余转码，移除绿框 ---
     private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect, originalPath: String): String {
         val wmMat = Mat()
         val cleanMat = Mat()
         
-        // 1. 转为 Mat
+        // 1. 转为 Mat (OpenCV 会自动处理 Android Bitmap 格式，通常是 RGBA)
         Utils.bitmapToMat(wmBm, wmMat)
         Utils.bitmapToMat(cleanBm, cleanMat)
         
-        // 2. ⚠️ 强制统一为 RGBA 4通道 (解决 copyTo 静默失败的核心) ⚠️
-        Imgproc.cvtColor(wmMat, wmMat, Imgproc.COLOR_BGR2RGBA)
-        Imgproc.cvtColor(cleanMat, cleanMat, Imgproc.COLOR_BGR2RGBA)
+        // ⚠️ 删除了 Imgproc.cvtColor... 这一行！保持原色！⚠️
         
-        // 3. 尺寸对齐
+        // 2. 尺寸对齐
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
         
         val imgWidth = wmMat.cols()
         val imgHeight = wmMat.rows()
 
-        // 4. 计算安全区域
+        // 3. 安全区域计算 (保持之前的 Clamping 逻辑)
         var x1 = rect.x.coerceIn(0, imgWidth - 1)
         var y1 = rect.y.coerceIn(0, imgHeight - 1)
         var x2 = (rect.x + rect.width).coerceIn(x1 + 1, imgWidth)
@@ -219,15 +203,13 @@ class MainActivity : FlutterActivity() {
         
         val safeRect = Rect(x1, y1, x2 - x1, y2 - y1)
 
-        // 5. 执行修复
+        // 4. 执行修复 (覆盖)
         val patch = cleanMat.submat(safeRect)
         patch.copyTo(wmMat.submat(safeRect))
         
-        // 6. 🟢 [调试功能] 画一个绿框，证明代码修改了图片 🟢
-        // 如果你看到绿框但没修复，说明原图有问题；如果你连绿框都看不到，说明没执行到这里
-        Imgproc.rectangle(wmMat, safeRect, Scalar(0.0, 255.0, 0.0, 255.0), 2) 
+        // ⚠️ 删除了 Imgproc.rectangle... 这一行！去掉绿框！⚠️
 
-        // 7. 保存
+        // 5. 保存
         val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(wmMat, resultBm)
         
@@ -260,8 +242,3 @@ class MainActivity : FlutterActivity() {
             FileOutputStream(file).use { out ->
                 bm.compress(Bitmap.CompressFormat.JPEG, 98, out)
             }
-            MediaScannerConnection.scanFile(context, arrayOf(file.toString()), arrayOf("image/jpeg"), null)
-            return file.absolutePath
-        }
-    }
-}

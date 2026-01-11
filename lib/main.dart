@@ -78,7 +78,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               Text("利用 AI 找到水印位置，然后从【无水印原图】中截取相同位置的画面，覆盖到【水印图】上。"),
               Divider(),
               Text("3. 置信度是什么？", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("AI 认为它是水印的概率。一般 30%-50% 效果最好。"),
+              Text("AI 认为它是水印的概率。一般 30%-50% 效果最好。低点也无妨，只要识别出来就行。"),
               Divider(),
               Text("4. 保存位置", style: TextStyle(fontWeight: FontWeight.bold)),
               Text("相册 -> Pictures -> LofterFixed"),
