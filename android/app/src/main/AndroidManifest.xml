@@ -1,14 +1,17 @@
+FILE: android/app/src/main/AndroidManifest.xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 权限部分 -->
+    
+    <!-- 👇 存储权限三件套 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <!-- Android 13+ 图片读取权限 -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <!-- Android 10 以下需要这个写入权限，10以上由 Gal 插件接管 -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
     <application
         android:label="LOFTER修复机"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true"> <!-- 👈 兼容旧版存储 -->
         
         <activity
             android:name=".MainActivity"
@@ -19,20 +22,16 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <meta-data
-                android:name="io.flutter.embedding.android.NormalTheme"
-                android:resource="@style/NormalTheme"
-                />
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-
-        <!-- 👇👇👇 关键修复：加上这行代码，声明使用 V2 引擎 👇👇👇 -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- 👆👆👆 关键修复 👆👆👆 -->
-        
     </application>
 </manifest>
