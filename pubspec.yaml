@@ -1,6 +1,5 @@
-FILE: pubspec.yaml
 name: lofter_fixer
-description: A new Flutter project.
+description: A Lofter Watermark Remover
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -12,29 +11,18 @@ dependencies:
     sdk: flutter
   # UI图标
   cupertino_icons: ^1.0.2
-  # 权限请求 (必须)
-  permission_handler: ^11.0.1
-  # 图片选择 (单张)
-  image_picker: ^1.0.4
-  # 文件选择 (批量)
+  # 权限管理 (核心)
+  permission_handler: ^11.3.0
+  # 文件/图片选择
+  image_picker: ^1.0.7
   file_picker: ^6.1.1
-  # 弹窗提示
+  # 提示框
   fluttertoast: ^8.2.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
-  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
-  assets:
-    # 记得把你的 tflite 模型放在这里！
-    - assets/best_float16.tflite 
-
-flutter_launcher_icons:
-  android: "launcher_icon"
-  ios: false
-  image_path: "assets/icon.png" # 确保你有这个图标
-  min_sdk_android: 21
