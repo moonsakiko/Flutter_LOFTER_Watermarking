@@ -19,6 +19,7 @@ import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.core.Rect
+import org.opencv.core.Scalar
 import org.opencv.imgproc.Imgproc
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
@@ -35,6 +36,10 @@ class MainActivity : FlutterActivity() {
     private var tflite: Interpreter? = null
     private val INPUT_SIZE = 640 
 
+    // 🔥 调试开关：设为 true 会在图片上画绿框；发布时设为 false
+    // 既然你现在看不到效果，我们强制开启它！
+    private val DEBUG_DRAW_BOX = true 
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         OpenCVLoader.initDebug()
@@ -43,7 +48,7 @@ class MainActivity : FlutterActivity() {
             if (call.method == "processImages") {
                 val tasks = call.argument<List<Map<String, String>>>("tasks") ?: listOf()
                 val confThreshold = call.argument<Double>("confidence")?.toFloat() ?: 0.5f
-                val paddingRatio = call.argument<Double>("padding")?.toFloat() ?: 0.2f // 🆕 接收动态 Padding
+                val paddingRatio = call.argument<Double>("padding")?.toFloat() ?: 0.2f
                 
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
@@ -90,7 +95,13 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float): String {
-        val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
+        // 1. 强制使用 Mutable Bitmap，确保可编辑
+        val options = BitmapFactory.Options()
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888
+        options.inMutable = true
+        
+        val wmBitmap = BitmapFactory.decodeFile(wmPath, options) ?: return "无法读取水印图"
+        // 原图可以不设 Mutable，因为我们只读
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
 
         val imageProcessor = ImageProcessor.Builder()
@@ -116,6 +127,8 @@ class MainActivity : FlutterActivity() {
 
         return if (bestBox != null) {
             try {
+                // 打印调试日志
+                Log.d("LofterFixer", "Fixing Rect: $bestBox on image ${wmBitmap.width}x${wmBitmap.height}")
                 val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
                 "SUCCESS: $savedPath"
             } catch (e: Exception) {
@@ -158,7 +171,6 @@ class MainActivity : FlutterActivity() {
         val width = w * scaleX
         val height = h * scaleY
 
-        // 🆕 使用 UI 传过来的动态比例
         val paddingW = width * paddingRatio
         val paddingH = height * paddingRatio
 
@@ -176,6 +188,7 @@ class MainActivity : FlutterActivity() {
         Utils.bitmapToMat(wmBm, wmMat)
         Utils.bitmapToMat(cleanBm, cleanMat)
         
+        // 强制把 原图 拉伸到和 水印图 一模一样大
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
         val imgWidth = wmMat.cols()
         val imgHeight = wmMat.rows()
@@ -190,15 +203,29 @@ class MainActivity : FlutterActivity() {
         var safeHeight = y2 - y1
 
         if (safeWidth <= 0 || safeHeight <= 0) {
-             // 兜底回退：如果加了 Padding 后飞出去了，尝试只取中心点
-             x1 = (rect.x + rect.width / 2).coerceIn(0, imgWidth - 1)
-             y1 = (rect.y + rect.height / 2).coerceIn(0, imgHeight - 1)
-             safeWidth = 1; safeHeight = 1
+             // 极小概率兜底
+             x1 = (imgWidth / 2) - 10
+             y1 = (imgHeight / 2) - 10
+             safeWidth = 20
+             safeHeight = 20
         }
 
         val safeRect = Rect(x1, y1, safeWidth, safeHeight)
+        
+        // --- 核心修复步骤 ---
         val patch = cleanMat.submat(safeRect)
         patch.copyTo(wmMat.submat(safeRect))
+
+        // --- 🟩 绿色调试框绘制 (Debug) ---
+        if (DEBUG_DRAW_BOX) {
+            // 画一个绿色的矩形框，线宽 5px
+            Imgproc.rectangle(
+                wmMat, 
+                safeRect, 
+                Scalar(0.0, 255.0, 0.0, 255.0), 
+                5
+            )
+        }
         
         val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(wmMat, resultBm)
