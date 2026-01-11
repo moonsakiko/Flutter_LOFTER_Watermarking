@@ -51,28 +51,24 @@ android {
     buildTypes {
         release {
             signingConfig signingConfigs.debug
-            // 开启缩减，减少体积
-            minifyEnabled true
+            minifyEnabled true // 开启混淆压缩
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
     
-    // 防止 TFLite 库压缩模型文件导致无法读取
+    // 防止 TFLite 模型被压缩损坏
     aaptOptions {
         noCompress "tflite"
     }
 }
 
 dependencies {
-    // 👇👇👇 核心原生库依赖 👇👇👇
-    // 1. TFLite (用于 AI 识别)
+    // TFLite
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
-
-    // 2. OpenCV (用于图像处理，免配置版)
+    // OpenCV
     implementation 'com.quickbirdstudios:opencv:4.5.3.0'
-    
-    // 3. 协程 (用于后台处理不卡UI)
+    // 协程
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1"
 }

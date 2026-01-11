@@ -1,16 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 👇 存储权限全家桶 👇 -->
-    <!-- Android 9及以下 -->
+    <!-- 权限声明 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-    <!-- Android 13+ 图片读取权限 -->
+    <!-- Android 13+ 图片权限 -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="LOFTER修复机"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:requestLegacyExternalStorage="true"> <!-- 兼容旧版存储 -->
+        android:requestLegacyExternalStorage="true"> 
         
         <activity
             android:name=".MainActivity"
@@ -20,6 +20,7 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
+            
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme"
@@ -29,6 +30,8 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        
+        <!-- 👇👇👇 关键：强制声明 V2 引擎 👇👇👇 -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

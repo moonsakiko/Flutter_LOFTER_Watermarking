@@ -2,10 +2,6 @@ name: Flutter Build Release
 on:
   workflow_dispatch:
 
-# 👇 在这里定义你的 APP 中文名
-env:
-  APP_CHINESE_NAME: "LOFTER修复机"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,22 +23,9 @@ jobs:
       - name: Get Dependencies
         run: flutter pub get
 
-      # 👇 修改 APP 名字 (使用 Python 避免编码问题)
-      - name: Change App Name
-        run: |
-          python3 -c "
-          import re
-          manifest = 'android/app/src/main/AndroidManifest.xml'
-          with open(manifest, 'r', encoding='utf-8') as f:
-              content = f.read()
-          # 替换 label
-          new_content = re.sub(r'android:label=\".*?\"', 'android:label=\"${{ env.APP_CHINESE_NAME }}\"', content)
-          with open(manifest, 'w', encoding='utf-8') as f:
-              f.write(new_content)
-          "
-
-      # 👇 打包 Release (自动签名使用默认 debug 签名即可，或者你可以之后配置正式签名)
-      # 这里使用 --debug 签名方便安装，但 build mode 是 release 以获得高性能
+      # 这里不再需要改名字的脚本，因为 Manifest 文件里已经写死了中文名
+      # 也不需要 sed 修改 Kotlin 版本，因为本地文件已经配置好了
+      
       - name: Build APK
         run: flutter build apk --release --target-platform android-arm64
 
