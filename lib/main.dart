@@ -40,7 +40,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   static const platform = MethodChannel('com.example.lofter_fixer/processor');
 
   double _confidence = 0.4;
-  double _paddingRatio = 0.2; // 🆕 默认扩大 20%
+  double _paddingRatio = 0.2;
+  bool _debugMode = false; // 🆕 调试模式开关
   String? _wmPath;
   String? _noWmPath;
   String? _resultPath;
@@ -55,11 +56,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _checkAndRequestPermissions() async {
-    // 降级后的权限申请，更优雅
-    Map<Permission, PermissionStatus> statuses = await [
-      Permission.storage,
-      Permission.photos, // Android 13+
-    ].request();
+    await [Permission.storage, Permission.photos].request();
   }
 
   void _showHelp() {
@@ -71,17 +68,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("1. 图片没变化？", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-              Text("请尝试调大【区域扩大】滑块。有时候AI识别的水印框太紧凑，需要扩大一圈才能完全覆盖。"),
+              Text("1. 开启【调试模式】", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              Text("如果你发现修复后的图片没变化，请勾选【调试模式】。"),
+              Text("此时图片上会出现一个【红框】。"),
+              Text("● 红框位置正确 -> 说明修复功能正常，请关闭调试模式再试。"),
+              Text("● 红框位置错误 -> 请调整置信度。"),
+              Text("● 没有红框 -> AI 未检测到水印。"),
               Divider(),
-              Text("2. 核心原理", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("利用 AI 找到水印位置，然后从【无水印原图】中截取相同位置的画面，覆盖到【水印图】上。"),
-              Divider(),
-              Text("3. 置信度是什么？", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("AI 认为它是水印的概率。一般 30%-50% 效果最好。"),
-              Divider(),
-              Text("4. 保存位置", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("相册 -> Pictures -> LofterFixed"),
+              Text("2. 区域扩大", style: TextStyle(fontWeight: FontWeight.bold)),
+              Text("如果水印边缘没修干净，请调大此滑块。"),
             ],
           ),
         ),
@@ -137,9 +132,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
       if (foundOrig != null) tasks.add({'wm': wm, 'clean': foundOrig});
     }
-
     if (tasks.isEmpty) {
-      _addLog("❌ 未找到匹配图片。请确保文件名包含 -wm 和 -orig");
+      _addLog("❌ 未找到匹配图片");
     } else {
       _addLog("✅ 匹配到 ${tasks.length} 组任务");
       _runNativeRepair(tasks, isSingle: false);
@@ -152,7 +146,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final result = await platform.invokeMethod('processImages', {
         'tasks': tasks,
         'confidence': _confidence,
-        'padding': _paddingRatio, // 🆕 传给 Kotlin
+        'padding': _paddingRatio,
+        'debug': _debugMode, // 🆕 传给 Kotlin
       });
 
       int successCount = 0;
@@ -166,11 +161,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
       
       String msg = successCount > 0 
-          ? "🎉 成功修复 $successCount 张！\n📂 已保存至相册/Pictures/LofterFixed" 
-          : "⚠️ 未修复 (请尝试调低置信度或调大区域扩大)";
+          ? "🎉 处理完成 $successCount 张！\n📂 已保存至相册/Pictures/LofterFixed" 
+          : "⚠️ 未检测到水印";
       
       _addLog(msg);
-      Fluttertoast.showToast(msg: successCount > 0 ? "修复完成" : "修复失败");
+      Fluttertoast.showToast(msg: "处理完成");
 
       if (isSingle && successCount > 0 && firstPath != null) {
         setState(() => _resultPath = firstPath);
@@ -179,10 +174,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         String guessPath = "/storage/emulated/0/Pictures/LofterFixed/Fixed_$fileName";
         setState(() => _resultPath = guessPath);
       }
-
     } on PlatformException catch (e) {
       _addLog("❌ 失败: ${e.message}");
-      _showErrorDialog("出错了", "错误信息: ${e.message}\n请检查是否授予了相册读写权限。");
+      _showErrorDialog("错误", "${e.message}");
     } finally {
       setState(() => _isProcessing = false);
     }
@@ -208,17 +202,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     return Scaffold(
       appBar: AppBar(
         title: const Text("LOFTER 修复机"),
-        actions: [
-          IconButton(onPressed: _showHelp, icon: const Icon(Icons.help_outline)),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [Tab(text: "单张精修"), Tab(text: "批量处理")],
-        ),
+        actions: [IconButton(onPressed: _showHelp, icon: const Icon(Icons.help_outline))],
+        bottom: TabBar(controller: _tabController, tabs: const [Tab(text: "单张精修"), Tab(text: "批量处理")]),
       ),
       body: Column(
         children: [
-          // 🎛️ 控制面板
           Card(
             margin: const EdgeInsets.all(12),
             child: Padding(
@@ -227,11 +215,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                 children: [
                   Row(
                     children: [
-                      const Text("🕵️ 侦探置信度: ", style: TextStyle(fontWeight: FontWeight.bold)),
+                      const Text("🕵️ 置信度: ", style: TextStyle(fontWeight: FontWeight.bold)),
                       Expanded(
                         child: Slider(
-                          value: _confidence,
-                          min: 0.1, max: 0.9, divisions: 8,
+                          value: _confidence, min: 0.1, max: 0.9, divisions: 8,
                           label: "${(_confidence * 100).toInt()}%",
                           onChanged: (v) => setState(() => _confidence = v),
                         ),
@@ -245,8 +232,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       const Text("📐 区域扩大: ", style: TextStyle(fontWeight: FontWeight.bold)),
                       Expanded(
                         child: Slider(
-                          value: _paddingRatio,
-                          min: 0.0, max: 0.5, divisions: 10, // 最大扩大 50%
+                          value: _paddingRatio, min: 0.0, max: 0.5, divisions: 10,
                           activeColor: Colors.orange,
                           label: "${(_paddingRatio * 100).toInt()}%",
                           onChanged: (v) => setState(() => _paddingRatio = v),
@@ -254,6 +240,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       ),
                       Text("${(_paddingRatio * 100).toInt()}%"),
                     ],
+                  ),
+                  const Divider(height: 1),
+                  // 🆕 调试模式开关
+                  SwitchListTile(
+                    title: const Text("🛠️ 调试模式 (仅画红框)", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                    subtitle: const Text("勾选后不修复，只标记水印位置，用于排查问题"),
+                    value: _debugMode,
+                    onChanged: (v) => setState(() => _debugMode = v),
+                    dense: true,
                   ),
                 ],
               ),
@@ -272,9 +267,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
           if (_resultPath != null)
             Container(
-              height: 120,
+              height: 140,
               padding: const EdgeInsets.all(8),
-              color: Colors.green.withOpacity(0.1),
+              color: _debugMode ? Colors.red.withOpacity(0.1) : Colors.green.withOpacity(0.1),
               child: Row(
                 children: [
                   AspectRatio(
@@ -282,37 +277,34 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: Image.file(
-                        File(_resultPath!), 
-                        fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) => Container(color: Colors.grey[300], child: const Icon(Icons.check, color: Colors.green)),
+                        File(_resultPath!), fit: BoxFit.cover,
+                        errorBuilder: (c,e,s) => const Center(child: Icon(Icons.broken_image)),
                       ),
                     ),
                   ),
                   const SizedBox(width: 10),
-                  const Expanded(child: Column(
+                  Expanded(child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text("✨ 修复成功", style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text("如果水印还在，请调大【区域扩大】滑块", style: TextStyle(fontSize: 12, color: Colors.orange)),
+                      Text(_debugMode ? "🛠️ 调试结果 (红框)" : "✨ 修复成功", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      const SizedBox(height: 5),
+                      Text(_debugMode ? "如果红框位置正确，请关闭调试模式再试" : "如果水印还在，请开启调试模式检查", style: const TextStyle(fontSize: 12)),
+                      const SizedBox(height: 5),
+                      const Text("已保存到相册/Pictures/LofterFixed", style: TextStyle(fontSize: 10, color: Colors.grey)),
                     ],
                   )),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => setState(() => _resultPath = null),
-                  )
+                  IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _resultPath = null))
                 ],
               ),
             ),
 
           Container(
-            height: 100,
+            height: 80,
             width: double.infinity,
             color: Colors.black.withOpacity(0.05),
             padding: const EdgeInsets.all(8),
-            child: SingleChildScrollView(
-              child: Text(_log, style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
-            ),
+            child: SingleChildScrollView(child: Text(_log, style: const TextStyle(fontSize: 12, fontFamily: "monospace"))),
           )
         ],
       ),
@@ -338,7 +330,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             icon: _isProcessing 
                 ? const SizedBox(width:16, height:16, child: CircularProgressIndicator(strokeWidth:2, color:Colors.white)) 
                 : const Icon(Icons.auto_fix_high),
-            label: Text(_isProcessing ? "正在修复..." : "开始修复"),
+            label: Text(_isProcessing ? "处理中..." : "开始执行"),
             style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15)),
           ),
         ],
@@ -347,22 +339,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Widget _buildBatchTab() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.folder_zip, size: 80, color: Colors.teal),
-          const SizedBox(height: 20),
-          const Text("请选择包含以下后缀的图片对：", style: TextStyle(color: Colors.grey)),
-          const Text("-wm.jpg (水印图)\n-orig.jpg (原图)", style: TextStyle(fontWeight: FontWeight.bold, height: 1.5)),
-          const SizedBox(height: 30),
-          FilledButton(
-            onPressed: _isProcessing ? null : _pickFilesBatch,
-            child: const Text("📂 批量选择并修复"),
-          ),
-        ],
-      ),
-    );
+    return Center(child: FilledButton(onPressed: _isProcessing ? null : _pickFilesBatch, child: const Text("📂 批量选择")));
   }
 
   Widget _imgBtn(String label, String? path, bool isWm) {
@@ -371,18 +348,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       child: Column(
         children: [
           Container(
-            width: 100,
-            height: 100,
+            width: 100, height: 100,
             decoration: BoxDecoration(
-              color: Colors.grey[200],
-              borderRadius: BorderRadius.circular(12),
+              color: Colors.grey[200], borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.grey.withOpacity(0.3)),
               image: path != null ? DecorationImage(image: FileImage(File(path)), fit: BoxFit.cover) : null,
             ),
             child: path == null ? const Icon(Icons.image_search, size: 40, color: Colors.grey) : null,
           ),
           const SizedBox(height: 8),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+          Text(label),
         ],
       ),
     );

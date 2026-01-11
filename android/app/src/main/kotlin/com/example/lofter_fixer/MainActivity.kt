@@ -3,11 +3,13 @@ package com.example.lofter_fixer
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaScannerConnection
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -15,12 +17,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.opencv.android.OpenCVLoader
-import org.opencv.android.Utils
-import org.opencv.core.Mat
-import org.opencv.core.Rect
-import org.opencv.core.Scalar
-import org.opencv.imgproc.Imgproc
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
 import org.tensorflow.lite.support.common.ops.NormalizeOp
@@ -36,19 +32,19 @@ class MainActivity : FlutterActivity() {
     private var tflite: Interpreter? = null
     private val INPUT_SIZE = 640 
 
-    // 🔥 调试开关：设为 true 会在图片上画绿框；发布时设为 false
-    // 既然你现在看不到效果，我们强制开启它！
-    private val DEBUG_DRAW_BOX = true 
-
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        OpenCVLoader.initDebug()
+        // OpenCV 仅用于加载库防止报错（如果你的项目里还有其他依赖），但本文件已不再使用 OpenCV 逻辑
+    }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+    override fun onFlutterUiDisplayed() {
+        super.onFlutterUiDisplayed()
+        MethodChannel(flutterEngine!!.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "processImages") {
                 val tasks = call.argument<List<Map<String, String>>>("tasks") ?: listOf()
                 val confThreshold = call.argument<Double>("confidence")?.toFloat() ?: 0.5f
                 val paddingRatio = call.argument<Double>("padding")?.toFloat() ?: 0.2f
+                val isDebug = call.argument<Boolean>("debug") ?: false // 🆕 接收调试标志
                 
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
@@ -65,7 +61,7 @@ class MainActivity : FlutterActivity() {
                             val wmPath = task["wm"]!!
                             val cleanPath = task["clean"]!!
                             try {
-                                val resultMsg = processOneImage(wmPath, cleanPath, confThreshold, paddingRatio)
+                                val resultMsg = processOneImage(wmPath, cleanPath, confThreshold, paddingRatio, isDebug)
                                 if (resultMsg.startsWith("SUCCESS")) {
                                     successCount++
                                     if (firstSuccessPath == null) firstSuccessPath = resultMsg.removePrefix("SUCCESS: ")
@@ -94,16 +90,15 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float): String {
-        // 1. 强制使用 Mutable Bitmap，确保可编辑
-        val options = BitmapFactory.Options()
-        options.inPreferredConfig = Bitmap.Config.ARGB_8888
-        options.inMutable = true
+    private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float, isDebug: Boolean): String {
+        // 1. 读取 Bitmap (确保是可变的，因为我们要画图)
+        val wmBitmapSrc = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
+        // 复制一份 Mutable Bitmap 用于绘图
+        val wmBitmap = wmBitmapSrc.copy(Bitmap.Config.ARGB_8888, true)
         
-        val wmBitmap = BitmapFactory.decodeFile(wmPath, options) ?: return "无法读取水印图"
-        // 原图可以不设 Mutable，因为我们只读
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
 
+        // 2. TFLite 推理
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
             .add(NormalizeOp(0f, 255f))
@@ -116,29 +111,60 @@ class MainActivity : FlutterActivity() {
         val dim1 = outputShape[1]
         val dim2 = outputShape[2]
         val outputArray = Array(1) { Array(dim1) { FloatArray(dim2) } }
-        
         tflite!!.run(tImage.buffer, outputArray)
 
+        // 3. 解析坐标
         val bestBox = if (dim1 > dim2) {
              parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         } else {
              parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         }
 
-        return if (bestBox != null) {
+        if (bestBox != null) {
+            // 4. ✅ 核心修改：使用 Canvas 进行绘图/修复
             try {
-                // 打印调试日志
-                Log.d("LofterFixer", "Fixing Rect: $bestBox on image ${wmBitmap.width}x${wmBitmap.height}")
-                val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
-                "SUCCESS: $savedPath"
+                // 确保 rect 在图片范围内 (Clamping)
+                val imgW = wmBitmap.width
+                val imgH = wmBitmap.height
+                val safeRect = Rect(
+                    bestBox.left.coerceIn(0, imgW),
+                    bestBox.top.coerceIn(0, imgH),
+                    bestBox.right.coerceIn(0, imgW),
+                    bestBox.bottom.coerceIn(0, imgH)
+                )
+
+                // 如果计算出的区域有效
+                if (safeRect.width() > 0 && safeRect.height() > 0) {
+                    val canvas = Canvas(wmBitmap)
+                    
+                    if (isDebug) {
+                        // 🛠️ 调试模式：画红框
+                        val paint = Paint().apply {
+                            color = Color.RED
+                            style = Paint.Style.STROKE
+                            strokeWidth = 10f
+                        }
+                        canvas.drawRect(safeRect, paint)
+                    } else {
+                        // ✨ 修复模式：从原图截取对应区域覆盖过去
+                        // 绘制逻辑：将 cleanBitmap 的 safeRect 区域，画到 wmBitmap 的 safeRect 区域
+                        val srcRect = safeRect // 源区域 = 目标区域
+                        canvas.drawBitmap(cleanBitmap, srcRect, safeRect, null)
+                    }
+                    
+                    return saveBitmap(wmBitmap, wmPath)
+                } else {
+                    return "计算出的修复区域无效"
+                }
             } catch (e: Exception) {
-                "保存异常: ${e.message}"
+                return "绘图异常: ${e.message}"
             }
         } else {
-            "置信度过低"
+            return "置信度过低"
         }
     }
 
+    // --- 坐标解析 (保留逻辑，改用 Android Rect) ---
     private fun parseOutputStandard(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int, pad: Float): Rect? {
         val numAnchors = rows[0].size 
         var maxConf = 0f
@@ -166,10 +192,10 @@ class MainActivity : FlutterActivity() {
         val scaleX = imgW.toFloat() / INPUT_SIZE
         val scaleY = imgH.toFloat() / INPUT_SIZE
         
-        val x = (cx - w / 2) * scaleX
-        val y = (cy - h / 2) * scaleY
         val width = w * scaleX
         val height = h * scaleY
+        val x = (cx - w / 2) * scaleX
+        val y = (cy - h / 2) * scaleY
 
         val paddingW = width * paddingRatio
         val paddingH = height * paddingRatio
@@ -177,62 +203,12 @@ class MainActivity : FlutterActivity() {
         return Rect(
             (x - paddingW).roundToInt(),
             (y - paddingH).roundToInt(),
-            (width + paddingW * 2).roundToInt(),
-            (height + paddingH * 2).roundToInt()
+            (x + width + paddingW).roundToInt(),
+            (y + height + paddingH).roundToInt()
         )
     }
 
-    private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect, originalPath: String): String {
-        val wmMat = Mat()
-        val cleanMat = Mat()
-        Utils.bitmapToMat(wmBm, wmMat)
-        Utils.bitmapToMat(cleanBm, cleanMat)
-        
-        // 强制把 原图 拉伸到和 水印图 一模一样大
-        Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
-        val imgWidth = wmMat.cols()
-        val imgHeight = wmMat.rows()
-
-        // 强力归位 (Clamping)
-        var x1 = rect.x.coerceIn(0, imgWidth - 1)
-        var y1 = rect.y.coerceIn(0, imgHeight - 1)
-        var x2 = (rect.x + rect.width).coerceIn(x1 + 1, imgWidth)
-        var y2 = (rect.y + rect.height).coerceIn(y1 + 1, imgHeight)
-
-        var safeWidth = x2 - x1
-        var safeHeight = y2 - y1
-
-        if (safeWidth <= 0 || safeHeight <= 0) {
-             // 极小概率兜底
-             x1 = (imgWidth / 2) - 10
-             y1 = (imgHeight / 2) - 10
-             safeWidth = 20
-             safeHeight = 20
-        }
-
-        val safeRect = Rect(x1, y1, safeWidth, safeHeight)
-        
-        // --- 核心修复步骤 ---
-        val patch = cleanMat.submat(safeRect)
-        patch.copyTo(wmMat.submat(safeRect))
-
-        // --- 🟩 绿色调试框绘制 (Debug) ---
-        if (DEBUG_DRAW_BOX) {
-            // 画一个绿色的矩形框，线宽 5px
-            Imgproc.rectangle(
-                wmMat, 
-                safeRect, 
-                Scalar(0.0, 255.0, 0.0, 255.0), 
-                5
-            )
-        }
-        
-        val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
-        Utils.matToBitmap(wmMat, resultBm)
-        
-        return saveBitmap(resultBm, originalPath)
-    }
-
+    // --- 保存逻辑 (保持之前的稳固版) ---
     private fun saveBitmap(bm: Bitmap, originalPath: String): String {
         val fileName = "Fixed_${File(originalPath).name}"
         val relativePath = Environment.DIRECTORY_PICTURES + File.separator + "LofterFixed"
