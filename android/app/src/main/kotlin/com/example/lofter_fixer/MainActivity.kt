@@ -31,11 +31,12 @@ import java.io.FileOutputStream
 import java.io.OutputStream
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.lofter_fixer/processor"
     private var tflite: Interpreter? = null
-    // ⚠️ 核心参数：保持 640 不变，绝对不动！
+    // ⚠️ 核心参数：保持 640 不变
     private val INPUT_SIZE = 640 
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -100,15 +101,14 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // --- 🚫 识别核心区 (严禁修改) ---
-    // 这里的逻辑和你之前成功那个版本一模一样
+    // --- 🚫 识别核心区 ---
     private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float): String {
         val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
 
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(0f, 255f)) 
+            .add(NormalizeOp(0f, 255f))
             .build()
         var tImage = TensorImage.fromBitmap(wmBitmap)
         tImage = imageProcessor.process(tImage)
@@ -132,15 +132,14 @@ class MainActivity : FlutterActivity() {
                 val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
                 "SUCCESS: $savedPath"
             } catch (e: Exception) {
-                // 这里捕捉到的就是你截图里的错误，现在修复了 repairWithOpenCV，应该不会再报了
-                "保存失败: ${e.message}"
+                // 这里会捕获详细的坐标错误信息
+                "保存异常: ${e.message}"
             }
         } else {
             "置信度过低"
         }
     }
 
-    // --- 辅助解析函数 (保持不变) ---
     private fun parseOutputStandard(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int): Rect? {
         val numAnchors = rows[0].size 
         var maxConf = 0f
@@ -164,73 +163,92 @@ class MainActivity : FlutterActivity() {
         return convertToRect(rows[bestIdx][0], rows[bestIdx][1], rows[bestIdx][2], rows[bestIdx][3], imgW, imgH)
     }
 
-    // --- ✅ 修正点 1: 坐标转换 ---
-    // 这里的修改是去掉了之前多余的 clamp，把所有边界检查留给 repairWithOpenCV 做
+    // --- ✅ 修正点 1: 坐标计算不进行任何裁切，保留原始计算值 ---
     private fun convertToRect(cx: Float, cy: Float, w: Float, h: Float, imgW: Int, imgH: Int): Rect {
         val scaleX = imgW.toFloat() / INPUT_SIZE
         val scaleY = imgH.toFloat() / INPUT_SIZE
         
-        val finalX = ((cx - w / 2) * scaleX).toInt()
-        val finalY = ((cy - h / 2) * scaleY).toInt()
-        val finalW = (w * scaleX).toInt()
-        val finalH = (h * scaleY).toInt()
+        // 计算左上角坐标 (不做 toInt 截断，保留精度到最后)
+        val x = (cx - w / 2) * scaleX
+        val y = (cy - h / 2) * scaleY
+        val width = w * scaleX
+        val height = h * scaleY
 
         // 稍微扩大范围 (Padding)
-        val paddingW = (finalW * 0.2).toInt()
-        val paddingH = (finalH * 0.1).toInt()
+        val paddingW = width * 0.2
+        val paddingH = height * 0.1
 
-        // 这里只负责算出带 Padding 的理论坐标，允许稍微越界，下一步再修剪
+        // 返回包含 Padding 的 Rect，允许负数，允许越界，交给 repairWithOpenCV 处理
         return Rect(
-            finalX - paddingW,
-            finalY - paddingH,
-            finalW + paddingW * 2,
-            finalH + paddingH * 2
+            (x - paddingW).roundToInt(),
+            (y - paddingH).roundToInt(),
+            (width + paddingW * 2).roundToInt(),
+            (height + paddingH * 2).roundToInt()
         )
     }
 
-    // --- ✅✅✅ 修正点 2: 稳健的 OpenCV 区域计算 (求交集) ---
+    // --- ✅✅✅ 修正点 2: 强力归位 (Clamping) ---
     private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect, originalPath: String): String {
         val wmMat = Mat()
         val cleanMat = Mat()
         Utils.bitmapToMat(wmBm, wmMat)
         Utils.bitmapToMat(cleanBm, cleanMat)
         
-        // 确保原图和水印图尺寸一致
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
         
         val imgWidth = wmMat.cols()
         val imgHeight = wmMat.rows()
 
-        // 📐 数学修复：计算 [识别框] 和 [图片本身] 的交集
-        // 无论 rect 怎么越界，这一步算出来的 start/end 永远在图片内部
-        val x1 = max(0, rect.x)
-        val y1 = max(0, rect.y)
-        val x2 = min(imgWidth, rect.x + rect.width)
-        val y2 = min(imgHeight, rect.y + rect.height)
+        // 诊断信息：如果出错，这个信息会非常有用
+        val diagInfo = "Image: ${imgWidth}x${imgHeight}, Rect: [${rect.x}, ${rect.y}, ${rect.width}, ${rect.height}]"
 
-        val safeWidth = x2 - x1
-        val safeHeight = y2 - y1
+        // 🔥 强制归位算法 🔥
+        // 1. 强制 Left/Top 至少为 0，至多为边界
+        var x1 = rect.x.coerceIn(0, imgWidth - 1)
+        var y1 = rect.y.coerceIn(0, imgHeight - 1)
+        
+        // 2. 计算 Right/Bottom，强制不超出图片
+        // 注意：rect.x 可能为负数，rect.x + rect.width 才是右边界
+        val rawX2 = rect.x + rect.width
+        val rawY2 = rect.y + rect.height
+        
+        var x2 = rawX2.coerceIn(x1 + 1, imgWidth) // 确保 x2 > x1
+        var y2 = rawY2.coerceIn(y1 + 1, imgHeight) // 确保 y2 > y1
 
-        // 只有当交集有效时才修复
-        if (safeWidth > 0 && safeHeight > 0) {
-            val safeRect = Rect(x1, y1, safeWidth, safeHeight)
-            
-            // 执行覆盖
+        // 3. 计算最终安全的宽高
+        var safeWidth = x2 - x1
+        var safeHeight = y2 - y1
+
+        // 4. 双重保险：如果计算出来还是无效（极小概率），尝试去掉 padding 再算一次
+        if (safeWidth <= 0 || safeHeight <= 0) {
+             // 回退逻辑：如果加上 padding 后飞出去了，我们尝试只取中心点那 1 个像素
+             // 这样虽然修不好，但至少不报错，能保存下来图片让你分析
+             x1 = (rect.x + rect.width / 2).coerceIn(0, imgWidth - 1)
+             y1 = (rect.y + rect.height / 2).coerceIn(0, imgHeight - 1)
+             safeWidth = 1
+             safeHeight = 1
+        }
+
+        // 再次检查 (理论上不可能进这里了)
+        if (safeWidth <= 0 || safeHeight <= 0) {
+            throw Exception("边界计算严重错误 (无法修复): $diagInfo")
+        }
+
+        val safeRect = Rect(x1, y1, safeWidth, safeHeight)
+        
+        try {
             val patch = cleanMat.submat(safeRect)
             patch.copyTo(wmMat.submat(safeRect))
             
             val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(wmMat, resultBm)
             
-            // 保存
             return saveBitmap(resultBm, originalPath)
-        } else {
-            // 只有当水印完全在图片外面时才会触发这个，几乎不可能
-            throw Exception("水印区域完全越界，无法修复")
+        } catch (e: Exception) {
+            throw Exception("OpenCV 覆盖失败: ${e.message} | $diagInfo")
         }
     }
 
-    // --- 稳固的保存逻辑 (Pictures/LofterFixed) ---
     private fun saveBitmap(bm: Bitmap, originalPath: String): String {
         val fileName = "Fixed_${File(originalPath).name}"
         val relativePath = Environment.DIRECTORY_PICTURES + File.separator + "LofterFixed"
