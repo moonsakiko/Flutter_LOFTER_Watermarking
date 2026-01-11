@@ -92,9 +92,13 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float): String {
-        val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
-        val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
+        // 1. 读取图片
+        // options 确保以标准 ARGB 格式读取，避免格式混乱
+        val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val wmBitmap = BitmapFactory.decodeFile(wmPath, options) ?: return "无法读取水印图"
+        val cleanBitmap = BitmapFactory.decodeFile(cleanPath, options) ?: return "无法读取原图"
 
+        // 2. 预处理
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
             .add(NormalizeOp(0f, 255f))
@@ -102,6 +106,7 @@ class MainActivity : FlutterActivity() {
         var tImage = TensorImage.fromBitmap(wmBitmap)
         tImage = imageProcessor.process(tImage)
 
+        // 3. 推理
         val outputTensor = tflite!!.getOutputTensor(0)
         val outputShape = outputTensor.shape() 
         val dim1 = outputShape[1]
@@ -110,12 +115,14 @@ class MainActivity : FlutterActivity() {
         
         tflite!!.run(tImage.buffer, outputArray)
 
+        // 4. 解析
         val bestBox = if (dim1 > dim2) {
              parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         } else {
              parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         }
 
+        // 5. 修复与保存
         return if (bestBox != null) {
             try {
                 val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
@@ -152,7 +159,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun convertToRect(cx: Float, cy: Float, w: Float, h: Float, imgW: Int, imgH: Int, paddingRatio: Float): Rect {
-        // 自适应检测坐标是否归一化
         val isNormalized = w < 1.0f 
         val normCx = if (isNormalized) cx * INPUT_SIZE else cx
         val normCy = if (isNormalized) cy * INPUT_SIZE else cy
@@ -178,16 +184,17 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // --- ✅ 关键修复：移除多余转码，移除绿框 ---
+    // --- ✅ 最终修复版：无色差，无绿框 ---
     private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect, originalPath: String): String {
         val wmMat = Mat()
         val cleanMat = Mat()
         
-        // 1. 转为 Mat (OpenCV 会自动处理 Android Bitmap 格式，通常是 RGBA)
+        // 1. 转为 Mat (Android 默认是 RGBA，我们保持这个格式不动)
         Utils.bitmapToMat(wmBm, wmMat)
         Utils.bitmapToMat(cleanBm, cleanMat)
         
-        // ⚠️ 删除了 Imgproc.cvtColor... 这一行！保持原色！⚠️
+        // ❌ 删除了导致变色的 Imgproc.cvtColor 代码
+        // ❌ 删除了绘制绿框的代码
         
         // 2. 尺寸对齐
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
@@ -195,7 +202,7 @@ class MainActivity : FlutterActivity() {
         val imgWidth = wmMat.cols()
         val imgHeight = wmMat.rows()
 
-        // 3. 安全区域计算 (保持之前的 Clamping 逻辑)
+        // 3. 计算安全区域 (强制归位)
         var x1 = rect.x.coerceIn(0, imgWidth - 1)
         var y1 = rect.y.coerceIn(0, imgHeight - 1)
         var x2 = (rect.x + rect.width).coerceIn(x1 + 1, imgWidth)
@@ -203,12 +210,10 @@ class MainActivity : FlutterActivity() {
         
         val safeRect = Rect(x1, y1, x2 - x1, y2 - y1)
 
-        // 4. 执行修复 (覆盖)
+        // 4. 执行修复 (只覆盖指定区域)
         val patch = cleanMat.submat(safeRect)
         patch.copyTo(wmMat.submat(safeRect))
         
-        // ⚠️ 删除了 Imgproc.rectangle... 这一行！去掉绿框！⚠️
-
         // 5. 保存
         val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(wmMat, resultBm)
@@ -242,3 +247,8 @@ class MainActivity : FlutterActivity() {
             FileOutputStream(file).use { out ->
                 bm.compress(Bitmap.CompressFormat.JPEG, 98, out)
             }
+            MediaScannerConnection.scanFile(context, arrayOf(file.toString()), arrayOf("image/jpeg"), null)
+            return file.absolutePath
+        }
+    }
+}
