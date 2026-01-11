@@ -4,7 +4,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:fluttertoast/fluttertoast.dart';
-import 'package:path_provider/path_provider.dart'; // 虽然这里没显式用，但保留依赖
 import 'dart:io';
 
 void main() {
@@ -45,7 +44,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   String? _noWmPath;
   String? _resultPath;
   bool _isProcessing = false;
-  String _log = "✅ 准备就绪\n📂 图片将保存至系统【下载】目录的 LofterFixed 文件夹";
+  String _log = "✅ 准备就绪\n📂 图片将保存至系统【Pictures/LofterFixed】文件夹\n(即相册中的 LOFTER修复机 目录)";
 
   @override
   void initState() {
@@ -54,24 +53,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _checkAndRequestPermissions();
   }
 
-  // --- 🔒 权限申请加强版 ---
   Future<void> _checkAndRequestPermissions() async {
-    // 1. 基础存储权限
-    var status = await Permission.storage.status;
-    if (!status.isGranted) {
-      await Permission.storage.request();
-    }
-
-    // 2. Android 11+ 的特殊权限 (所有文件访问)
-    // 即使 MediaStore 不需要它，但为了保证能读取相册所有位置，建议申请
-    if (await Permission.manageExternalStorage.isDenied) {
-      await Permission.manageExternalStorage.request();
-    }
-    
-    // 3. Android 13+ 图片权限
-    if (await Permission.photos.isDenied) {
-      await Permission.photos.request();
-    }
+    // 全面的权限申请，保证万无一失
+    await [
+      Permission.storage,
+      Permission.manageExternalStorage, // Android 11+
+      Permission.photos, // Android 13+
+    ].request();
   }
 
   void _showHelp() {
@@ -83,17 +71,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("1. 核心原理", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("利用 AI 识别水印位置，从无水印原图中截取对应区域覆盖修复。"),
+              Text("1. 为什么用 Pictures 目录？", style: TextStyle(fontWeight: FontWeight.bold)),
+              Text("安卓系统限制了 Download 目录的写入。Pictures 是最稳定的图片存放区。"),
               SizedBox(height: 10),
-              Text("2. 单张模式", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("手动选择一张【带水印图】和一张【无水印图】，点击修复即可。"),
+              Text("2. 找不到图片怎么办？", style: TextStyle(fontWeight: FontWeight.bold)),
+              Text("打开系统相册，查看 'LofterFixed' 或 '图片' 目录。"),
               SizedBox(height: 10),
-              Text("3. 批量模式", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("选择多张图片。系统会自动匹配文件名：\n- 水印图需包含 '-wm'\n- 原图需包含 '-orig'"),
-              SizedBox(height: 10),
-              Text("4. 文件位置", style: TextStyle(fontWeight: FontWeight.bold)),
-              Text("修复后的图片保存在系统【Download/LofterFixed】文件夹。"),
+              Text("3. 核心功能", style: TextStyle(fontWeight: FontWeight.bold)),
+              Text("自动匹配 '-wm' (水印) 和 '-orig' (原图) 进行无缝修补。"),
             ],
           ),
         ),
@@ -133,7 +118,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void _matchAndProcess(List<String> files) {
     List<Map<String, String>> tasks = [];
     List<String> wmFiles = files.where((f) => f.toLowerCase().contains("-wm.")).toList();
-    
     for (var wm in wmFiles) {
       String expectedOrig = wm.replaceAll(RegExp(r'-wm\.', caseSensitive: false), '-orig.');
       String? foundOrig;
@@ -163,31 +147,55 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         'confidence': _confidence,
       });
 
-      int successCount = result is int ? result : 0;
+      // 解析 Kotlin 返回的数据: {count: int, firstPath: String?}
+      int successCount = 0;
+      String? firstPath;
+
+      if (result is Map) {
+        successCount = result['count'] as int;
+        firstPath = result['firstPath'] as String?;
+      } else if (result is int) {
+        successCount = result;
+      }
       
       String msg = successCount > 0 
-          ? "🎉 成功修复 $successCount 张！\n📂 已保存至 Download/LofterFixed" 
-          : "⚠️ 未能修复，请尝试调整置信度";
+          ? "🎉 成功修复 $successCount 张！\n📂 已保存至相册/Pictures/LofterFixed" 
+          : "⚠️ 修复失败，请查看下方日志";
       
       _addLog(msg);
       Fluttertoast.showToast(msg: successCount > 0 ? "修复完成" : "修复失败");
 
-      if (isSingle && successCount > 0 && _wmPath != null) {
-        // 尝试推测路径用于预览
-        // 注意：由于 Android 11+ 路径访问限制，这里可能无法直接读取到 File
-        // 我们尝试构建一个标准路径，如果读不到，就不显示预览，但文件肯定在相册里
+      // 预览逻辑
+      if (isSingle && successCount > 0 && firstPath != null) {
+        // 如果 Kotlin 返回了路径，直接用
+        setState(() => _resultPath = firstPath);
+      } else if (isSingle && successCount > 0 && _wmPath != null) {
+        // 兜底推测
         String fileName = File(_wmPath!).uri.pathSegments.last;
-        String potentialPath = "/storage/emulated/0/Download/LofterFixed/Fixed_$fileName";
-        if (File(potentialPath).existsSync()) {
-          setState(() => _resultPath = potentialPath);
-        }
+        String guessPath = "/storage/emulated/0/Pictures/LofterFixed/Fixed_$fileName";
+        setState(() => _resultPath = guessPath);
       }
 
     } on PlatformException catch (e) {
-      _addLog("❌ 错误: ${e.message}\n${e.details ?? ''}");
+      // 捕获 Kotlin 层抛出的明确错误
+      _addLog("❌ 保存失败: ${e.message}\n详情: ${e.details ?? ''}");
+      _showErrorDialog("保存失败", "请确保已授予APP存储权限。\n错误信息: ${e.message}");
+    } catch (e) {
+      _addLog("❌ 未知错误: $e");
     } finally {
       setState(() => _isProcessing = false);
     }
+  }
+
+  void _showErrorDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text("⚠️ $title"),
+        content: Text(content),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
+      ),
+    );
   }
 
   void _addLog(String msg) {
@@ -239,6 +247,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             ),
           ),
 
+          // 结果预览 (带错误处理)
           if (_resultPath != null)
             Container(
               height: 120,
@@ -250,7 +259,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     aspectRatio: 1,
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: Image.file(File(_resultPath!), fit: BoxFit.cover, errorBuilder: (c,e,s) => const Icon(Icons.image_not_supported)),
+                      // 即使文件路径有问题，也给一个图标兜底，避免红屏
+                      child: Image.file(
+                        File(_resultPath!), 
+                        fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) => Container(
+                          color: Colors.grey[300],
+                          child: const Icon(Icons.check_circle, color: Colors.green, size: 40),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -258,8 +275,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text("✨ 修复效果预览", style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text("已保存到 Download 文件夹", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text("✨ 修复成功", style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text("请在相册 -> Pictures -> LofterFixed 中查看", style: TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   )),
                   IconButton(
