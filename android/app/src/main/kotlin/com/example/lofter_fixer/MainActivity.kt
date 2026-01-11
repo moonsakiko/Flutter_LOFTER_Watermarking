@@ -28,27 +28,22 @@ import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.File
 import java.io.FileOutputStream
-import java.io.OutputStream
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.lofter_fixer/processor"
     private var tflite: Interpreter? = null
-    // ⚠️ 核心参数：保持 640 不变
     private val INPUT_SIZE = 640 
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        if (!OpenCVLoader.initDebug()) {
-            Log.e("LofterFixer", "OpenCV initialization failed!")
-        }
+        OpenCVLoader.initDebug()
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "processImages") {
                 val tasks = call.argument<List<Map<String, String>>>("tasks") ?: listOf()
                 val confThreshold = call.argument<Double>("confidence")?.toFloat() ?: 0.5f
+                val paddingRatio = call.argument<Double>("padding")?.toFloat() ?: 0.2f // 🆕 接收动态 Padding
                 
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
@@ -65,12 +60,10 @@ class MainActivity : FlutterActivity() {
                             val wmPath = task["wm"]!!
                             val cleanPath = task["clean"]!!
                             try {
-                                val resultMsg = processOneImage(wmPath, cleanPath, confThreshold)
+                                val resultMsg = processOneImage(wmPath, cleanPath, confThreshold, paddingRatio)
                                 if (resultMsg.startsWith("SUCCESS")) {
                                     successCount++
-                                    if (firstSuccessPath == null) {
-                                        firstSuccessPath = resultMsg.removePrefix("SUCCESS: ")
-                                    }
+                                    if (firstSuccessPath == null) firstSuccessPath = resultMsg.removePrefix("SUCCESS: ")
                                 } else {
                                     debugLogs.append("${File(wmPath).name} -> $resultMsg\n")
                                 }
@@ -83,16 +76,11 @@ class MainActivity : FlutterActivity() {
                             if (successCount == 0 && tasks.isNotEmpty()) {
                                 result.error("NO_DETECTION", "未检测到或保存失败:\n$debugLogs", null)
                             } else {
-                                result.success(mapOf(
-                                    "count" to successCount,
-                                    "firstPath" to firstSuccessPath
-                                ))
+                                result.success(mapOf("count" to successCount, "firstPath" to firstSuccessPath))
                             }
                         }
                     } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            result.error("ERR", "系统严重错误: ${e.message}", null)
-                        }
+                        withContext(Dispatchers.Main) { result.error("ERR", "系统严重错误: ${e.message}", null) }
                     }
                 }
             } else {
@@ -101,8 +89,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // --- 🚫 识别核心区 ---
-    private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float): String {
+    private fun processOneImage(wmPath: String, cleanPath: String, confThreshold: Float, paddingRatio: Float): String {
         val wmBitmap = BitmapFactory.decodeFile(wmPath) ?: return "无法读取水印图"
         val cleanBitmap = BitmapFactory.decodeFile(cleanPath) ?: return "无法读取原图"
 
@@ -122,9 +109,9 @@ class MainActivity : FlutterActivity() {
         tflite!!.run(tImage.buffer, outputArray)
 
         val bestBox = if (dim1 > dim2) {
-             parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height)
+             parseOutputTransposed(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         } else {
-             parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height)
+             parseOutputStandard(outputArray[0], confThreshold, wmBitmap.width, wmBitmap.height, paddingRatio)
         }
 
         return if (bestBox != null) {
@@ -132,7 +119,6 @@ class MainActivity : FlutterActivity() {
                 val savedPath = repairWithOpenCV(wmBitmap, cleanBitmap, bestBox, wmPath)
                 "SUCCESS: $savedPath"
             } catch (e: Exception) {
-                // 这里会捕获详细的坐标错误信息
                 "保存异常: ${e.message}"
             }
         } else {
@@ -140,7 +126,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun parseOutputStandard(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int): Rect? {
+    private fun parseOutputStandard(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int, pad: Float): Rect? {
         val numAnchors = rows[0].size 
         var maxConf = 0f
         var bestIdx = -1
@@ -149,10 +135,10 @@ class MainActivity : FlutterActivity() {
             if (conf > maxConf) { maxConf = conf; bestIdx = i }
         }
         if (maxConf < confThresh) return null
-        return convertToRect(rows[0][bestIdx], rows[1][bestIdx], rows[2][bestIdx], rows[3][bestIdx], imgW, imgH)
+        return convertToRect(rows[0][bestIdx], rows[1][bestIdx], rows[2][bestIdx], rows[3][bestIdx], imgW, imgH, pad)
     }
 
-    private fun parseOutputTransposed(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int): Rect? {
+    private fun parseOutputTransposed(rows: Array<FloatArray>, confThresh: Float, imgW: Int, imgH: Int, pad: Float): Rect? {
         var maxConf = 0f
         var bestIdx = -1
         for (i in rows.indices) {
@@ -160,25 +146,22 @@ class MainActivity : FlutterActivity() {
             if (conf > maxConf) { maxConf = conf; bestIdx = i }
         }
         if (maxConf < confThresh) return null
-        return convertToRect(rows[bestIdx][0], rows[bestIdx][1], rows[bestIdx][2], rows[bestIdx][3], imgW, imgH)
+        return convertToRect(rows[bestIdx][0], rows[bestIdx][1], rows[bestIdx][2], rows[bestIdx][3], imgW, imgH, pad)
     }
 
-    // --- ✅ 修正点 1: 坐标计算不进行任何裁切，保留原始计算值 ---
-    private fun convertToRect(cx: Float, cy: Float, w: Float, h: Float, imgW: Int, imgH: Int): Rect {
+    private fun convertToRect(cx: Float, cy: Float, w: Float, h: Float, imgW: Int, imgH: Int, paddingRatio: Float): Rect {
         val scaleX = imgW.toFloat() / INPUT_SIZE
         val scaleY = imgH.toFloat() / INPUT_SIZE
         
-        // 计算左上角坐标 (不做 toInt 截断，保留精度到最后)
         val x = (cx - w / 2) * scaleX
         val y = (cy - h / 2) * scaleY
         val width = w * scaleX
         val height = h * scaleY
 
-        // 稍微扩大范围 (Padding)
-        val paddingW = width * 0.2
-        val paddingH = height * 0.1
+        // 🆕 使用 UI 传过来的动态比例
+        val paddingW = width * paddingRatio
+        val paddingH = height * paddingRatio
 
-        // 返回包含 Padding 的 Rect，允许负数，允许越界，交给 repairWithOpenCV 处理
         return Rect(
             (x - paddingW).roundToInt(),
             (y - paddingH).roundToInt(),
@@ -187,7 +170,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // --- ✅✅✅ 修正点 2: 强力归位 (Clamping) ---
     private fun repairWithOpenCV(wmBm: Bitmap, cleanBm: Bitmap, rect: Rect, originalPath: String): String {
         val wmMat = Mat()
         val cleanMat = Mat()
@@ -195,58 +177,33 @@ class MainActivity : FlutterActivity() {
         Utils.bitmapToMat(cleanBm, cleanMat)
         
         Imgproc.resize(cleanMat, cleanMat, wmMat.size(), 0.0, 0.0, Imgproc.INTER_LANCZOS4)
-        
         val imgWidth = wmMat.cols()
         val imgHeight = wmMat.rows()
 
-        // 诊断信息：如果出错，这个信息会非常有用
-        val diagInfo = "Image: ${imgWidth}x${imgHeight}, Rect: [${rect.x}, ${rect.y}, ${rect.width}, ${rect.height}]"
-
-        // 🔥 强制归位算法 🔥
-        // 1. 强制 Left/Top 至少为 0，至多为边界
+        // 强力归位 (Clamping)
         var x1 = rect.x.coerceIn(0, imgWidth - 1)
         var y1 = rect.y.coerceIn(0, imgHeight - 1)
-        
-        // 2. 计算 Right/Bottom，强制不超出图片
-        // 注意：rect.x 可能为负数，rect.x + rect.width 才是右边界
-        val rawX2 = rect.x + rect.width
-        val rawY2 = rect.y + rect.height
-        
-        var x2 = rawX2.coerceIn(x1 + 1, imgWidth) // 确保 x2 > x1
-        var y2 = rawY2.coerceIn(y1 + 1, imgHeight) // 确保 y2 > y1
+        var x2 = (rect.x + rect.width).coerceIn(x1 + 1, imgWidth)
+        var y2 = (rect.y + rect.height).coerceIn(y1 + 1, imgHeight)
 
-        // 3. 计算最终安全的宽高
         var safeWidth = x2 - x1
         var safeHeight = y2 - y1
 
-        // 4. 双重保险：如果计算出来还是无效（极小概率），尝试去掉 padding 再算一次
         if (safeWidth <= 0 || safeHeight <= 0) {
-             // 回退逻辑：如果加上 padding 后飞出去了，我们尝试只取中心点那 1 个像素
-             // 这样虽然修不好，但至少不报错，能保存下来图片让你分析
+             // 兜底回退：如果加了 Padding 后飞出去了，尝试只取中心点
              x1 = (rect.x + rect.width / 2).coerceIn(0, imgWidth - 1)
              y1 = (rect.y + rect.height / 2).coerceIn(0, imgHeight - 1)
-             safeWidth = 1
-             safeHeight = 1
-        }
-
-        // 再次检查 (理论上不可能进这里了)
-        if (safeWidth <= 0 || safeHeight <= 0) {
-            throw Exception("边界计算严重错误 (无法修复): $diagInfo")
+             safeWidth = 1; safeHeight = 1
         }
 
         val safeRect = Rect(x1, y1, safeWidth, safeHeight)
+        val patch = cleanMat.submat(safeRect)
+        patch.copyTo(wmMat.submat(safeRect))
         
-        try {
-            val patch = cleanMat.submat(safeRect)
-            patch.copyTo(wmMat.submat(safeRect))
-            
-            val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
-            Utils.matToBitmap(wmMat, resultBm)
-            
-            return saveBitmap(resultBm, originalPath)
-        } catch (e: Exception) {
-            throw Exception("OpenCV 覆盖失败: ${e.message} | $diagInfo")
-        }
+        val resultBm = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(wmMat, resultBm)
+        
+        return saveBitmap(resultBm, originalPath)
     }
 
     private fun saveBitmap(bm: Bitmap, originalPath: String): String {
